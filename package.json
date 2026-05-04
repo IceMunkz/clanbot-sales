@@ -1,0 +1,14 @@
+{
+  "name": "clanbot-sales",
+  "version": "1.0.0",
+  "description": "ClanBot sales portal — Stripe checkout + Pelican auto-provisioning",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "nodemailer": "^6.9.16",
+    "stripe": "^17.7.0"
+  }
+}

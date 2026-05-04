@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClanBot — Rust+ Discord Companion</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0d0f1a;
+  --surface:  #121629;
+  --card:     #16213e;
+  --border:   #1e2d50;
+  --blue:     #3b82f6;
+  --blue-dim: rgba(59,130,246,.12);
+  --text:     #f1f5f9;
+  --muted:    #64748b;
+  --subtle:   #94a3b8;
+  --green:    #22c55e;
+  --orange:   #fb923c;
+}
+html { scroll-behavior: smooth; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; line-height: 1.6; }
+a { color: inherit; text-decoration: none; }
+
+/* Nav */
+nav { display: flex; align-items: center; justify-content: space-between; padding: 16px 40px; background: rgba(13,15,26,.85); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
+.nav-logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
+.nav-logo span { color: var(--blue); }
+
+/* Hero */
+.hero-wrap { position: relative; overflow: hidden; padding: 110px 20px 90px; text-align: center; }
+.hero-glow { position: absolute; top: -120px; left: 50%; transform: translateX(-50%); width: 700px; height: 500px; background: radial-gradient(ellipse, rgba(59,130,246,.18) 0%, transparent 70%); pointer-events: none; }
+.hero-badge { display: inline-flex; align-items: center; gap: 8px; background: var(--blue-dim); border: 1px solid rgba(59,130,246,.25); color: #60a5fa; border-radius: 100px; padding: 6px 18px; font-size: 13px; font-weight: 600; margin-bottom: 30px; }
+.hero h1 { font-size: clamp(38px, 6vw, 70px); font-weight: 900; line-height: 1.05; letter-spacing: -2px; margin-bottom: 22px; }
+.hero h1 em { color: var(--blue); font-style: normal; }
+.hero-sub { font-size: 18px; color: var(--subtle); max-width: 540px; margin: 0 auto 44px; line-height: 1.75; }
+
+/* Pricing */
+.section { padding: 80px 20px; max-width: 1100px; margin: 0 auto; }
+.section-label { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--blue); margin-bottom: 12px; }
+.section-title { text-align: center; font-size: clamp(26px,4vw,38px); font-weight: 800; letter-spacing: -0.5px; margin-bottom: 10px; }
+.section-sub { text-align: center; color: var(--muted); font-size: 16px; margin-bottom: 52px; }
+
+.pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; max-width: 720px; margin: 0 auto; }
+.price-card { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 36px 32px; position: relative; transition: border-color .2s, transform .15s; }
+.price-card.featured { border-color: var(--blue); transform: scale(1.02); }
+.price-card.featured::before { content: 'Most Popular'; position: absolute; top: -13px; left: 50%; transform: translateX(-50%); background: var(--blue); color: #fff; font-size: 11px; font-weight: 700; padding: 4px 14px; border-radius: 100px; white-space: nowrap; }
+.price-card:hover { border-color: var(--blue); }
+.plan-name { font-size: 14px; font-weight: 700; color: var(--subtle); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+.plan-price { font-size: 52px; font-weight: 900; letter-spacing: -2px; color: var(--text); line-height: 1; margin-bottom: 4px; }
+.plan-price sup { font-size: 24px; vertical-align: super; }
+.plan-period { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+.plan-features { list-style: none; margin-bottom: 32px; }
+.plan-features li { font-size: 14px; color: var(--subtle); padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; align-items: center; gap: 10px; }
+.plan-features li:last-child { border-bottom: none; }
+.plan-features li::before { content: '✓'; color: var(--green); font-weight: 700; flex-shrink: 0; }
+
+.btn-buy { width: 100%; background: var(--blue); color: #fff; border: none; border-radius: 12px; padding: 16px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background .15s, transform .1s; }
+.btn-buy:hover { background: #2563eb; transform: translateY(-1px); }
+.btn-buy:disabled { opacity: .5; cursor: default; transform: none; }
+
+/* Checkout modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.open { display: flex; }
+.modal { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 40px; width: 100%; max-width: 440px; }
+.modal h2 { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+.modal p { color: var(--subtle); font-size: 14px; margin-bottom: 28px; }
+.field { margin-bottom: 18px; }
+.field label { display: block; font-size: 13px; font-weight: 600; color: var(--subtle); margin-bottom: 6px; }
+.field input { width: 100%; background: #0d0f1a; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-size: 14px; color: var(--text); outline: none; transition: border-color .15s; }
+.field input:focus { border-color: var(--blue); }
+.modal-actions { display: flex; gap: 12px; margin-top: 8px; }
+.btn-cancel { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--subtle); border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn-confirm { flex: 2; background: var(--blue); color: #fff; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.btn-confirm:hover { background: #2563eb; }
+#modal-error { color: #f87171; font-size: 13px; margin-top: 10px; display: none; }
+
+/* Features */
+.feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.feat-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; display: flex; gap: 16px; align-items: flex-start; transition: border-color .2s; }
+.feat-card:hover { border-color: var(--blue); }
+.feat-icon { width: 44px; height: 44px; flex-shrink: 0; background: var(--blue-dim); border-radius: 10px; display: grid; place-items: center; font-size: 22px; }
+.feat-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.feat-card p { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+/* Footer */
+footer { background: var(--surface); border-top: 1px solid var(--border); padding: 32px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">Clan<span>Bot</span></div>
+</nav>
+
+<!-- Hero -->
+<div class="hero-wrap">
+  <div class="hero-glow"></div>
+  <div class="hero-badge">🎮 Rust+ Discord Companion Bot</div>
+  <div class="hero">
+    <h1>Your clan's<br><em>always watching</em></h1>
+    <p class="hero-sub">Raid alerts, smart switches, market tracking, live map events — all in your Discord. Setup takes 5 minutes.</p>
+  </div>
+</div>
+
+<!-- Pricing -->
+<div class="section">
+  <div class="section-label">Pricing</div>
+  <div class="section-title">Simple, per-server pricing</div>
+  <div class="section-sub">One bot. One Discord server. Cancel anytime.</div>
+
+  <div class="pricing-grid">
+    <div class="price-card featured">
+      <div class="plan-name">Standard</div>
+      <div class="plan-price"><sup>$</sup>9</div>
+      <div class="plan-period">per month · cancel anytime</div>
+      <ul class="plan-features">
+        <li>Dedicated bot instance</li>
+        <li>Raid alerts via FCM push</li>
+        <li>Smart switch control</li>
+        <li>Market tracker + alerts</li>
+        <li>Live map events</li>
+        <li>Team management</li>
+        <li>CCTV &amp; drone control</li>
+        <li>Web config panel</li>
+        <li>5-minute setup wizard</li>
+      </ul>
+      <button class="btn-buy" onclick="openModal()">Get Started →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Features -->
+<div class="section" id="features">
+  <div class="section-label">What You Get</div>
+  <div class="section-title">Every feature your clan needs</div>
+  <div class="section-sub">Everything runs in your own Discord. No third-party dashboards.</div>
+
+  <div class="feat-grid">
+    <div class="feat-card"><div class="feat-icon">🚨</div><div><h3>Raid Alerts</h3><p>Instant Discord ping when explosions hit near your base. Never get caught offline-raided.</p></div></div>
+    <div class="feat-card"><div class="feat-icon">⚡</div><div><h3>Smart Switches</h3><p>Toggle turrets, lights, and traps from Discord buttons. No more running to the base.</p></div></div>
+    <div class="feat-card"><div class="feat-icon">📈</div><div><h3>Market Tracker</h3><p>Live vending prices with alerts when items drop below your target price.</p></div></div>
+    <div class="feat-card"><div class="feat-icon">🗺️</div><div><h3>Live Map Events</h3><p>Automatic alerts for cargo, patrol heli, Bradley, chinook drops, oil rig and vendors.</p></div></div>
+    <div class="feat-card"><div class="feat-icon">👥</div><div><h3>Team Management</h3><p>See who's online, track members on the map, assign team leader, AFK-kick idle players.</p></div></div>
+    <div class="feat-card"><div class="feat-icon">📷</div><div><h3>CCTV &amp; Drones</h3><p>Monument CCTV codes and drone control directly from Discord.</p></div></div>
+  </div>
+</div>
+
+<!-- Checkout Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h2>Get ClanBot</h2>
+    <p>Enter your details and you'll be redirected to secure checkout. Your bot is provisioned automatically after payment.</p>
+    <div class="field">
+      <label>Your Name</label>
+      <input type="text" id="name" placeholder="Commander">
+    </div>
+    <div class="field">
+      <label>Email Address</label>
+      <input type="email" id="email" placeholder="you@example.com">
+    </div>
+    <div id="modal-error"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-confirm" id="confirm-btn" onclick="startCheckout()">Checkout →</button>
+    </div>
+  </div>
+</div>
+
+<footer>&copy; 2026 ClanBot &mdash; Built for Rust clans.</footer>
+
+<script>
+function openModal() { document.getElementById('modal').classList.add('open'); }
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal')) closeModal();
+});
+
+async function startCheckout() {
+  const name  = document.getElementById('name').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const err   = document.getElementById('modal-error');
+  const btn   = document.getElementById('confirm-btn');
+
+  err.style.display = 'none';
+  if (!email || !email.includes('@')) { err.textContent = 'Please enter a valid email.'; err.style.display = 'block'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Redirecting…';
+
+  try {
+    const res = await fetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email }),
+    });
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      err.textContent = data.error || 'Something went wrong. Try again.';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Checkout →';
+    }
+  } catch (e) {
+    err.textContent = 'Network error. Please try again.';
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Checkout →';
+  }
+}
+</script>
+
+</body>
+</html>
