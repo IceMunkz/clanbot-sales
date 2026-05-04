@@ -4,154 +4,722 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClanBot — Rust+ Discord Companion</title>
+<meta name="description" content="The ultimate Rust+ Discord bot. Raid alerts, smart switches, market tracking and live map events — all in your Discord server for £5/month.">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg:       #0d0f1a;
-  --surface:  #121629;
-  --card:     #16213e;
-  --border:   #1e2d50;
-  --blue:     #3b82f6;
-  --blue-dim: rgba(59,130,246,.12);
-  --text:     #f1f5f9;
-  --muted:    #64748b;
-  --subtle:   #94a3b8;
-  --green:    #22c55e;
-  --orange:   #fb923c;
+  --bg:        #080a14;
+  --surface:   #0d1022;
+  --card:      #111527;
+  --card-hi:   #141830;
+  --border:    #1a2540;
+  --border-hi: #243560;
+  --blue:      #3b82f6;
+  --blue-dim:  rgba(59,130,246,.1);
+  --blue-glow: rgba(59,130,246,.25);
+  --text:      #f1f5f9;
+  --muted:     #4e6080;
+  --subtle:    #8fa3bf;
+  --green:     #22c55e;
+  --green-dim: rgba(34,197,94,.12);
+  --orange:    #fb923c;
+  --red:       #ef4444;
 }
 html { scroll-behavior: smooth; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; line-height: 1.6; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
 a { color: inherit; text-decoration: none; }
 
-/* Nav */
-nav { display: flex; align-items: center; justify-content: space-between; padding: 16px 40px; background: rgba(13,15,26,.85); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
-.nav-logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
-.nav-logo span { color: var(--blue); }
+/* ── Noise texture overlay ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 0; opacity: .4;
+}
 
-/* Hero */
-.hero-wrap { position: relative; overflow: hidden; padding: 110px 20px 90px; text-align: center; }
-.hero-glow { position: absolute; top: -120px; left: 50%; transform: translateX(-50%); width: 700px; height: 500px; background: radial-gradient(ellipse, rgba(59,130,246,.18) 0%, transparent 70%); pointer-events: none; }
-.hero-badge { display: inline-flex; align-items: center; gap: 8px; background: var(--blue-dim); border: 1px solid rgba(59,130,246,.25); color: #60a5fa; border-radius: 100px; padding: 6px 18px; font-size: 13px; font-weight: 600; margin-bottom: 30px; }
-.hero h1 { font-size: clamp(38px, 6vw, 70px); font-weight: 900; line-height: 1.05; letter-spacing: -2px; margin-bottom: 22px; }
+/* ── Nav ── */
+nav {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 48px;
+  background: rgba(8,10,20,.8);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+  backdrop-filter: blur(16px);
+}
+.nav-logo {
+  font-size: 21px; font-weight: 900;
+  letter-spacing: -0.5px;
+  display: flex; align-items: center; gap: 10px;
+}
+.nav-logo .dot { color: var(--blue); }
+.nav-links { display: flex; align-items: center; gap: 32px; }
+.nav-links a { font-size: 14px; color: var(--subtle); transition: color .15s; }
+.nav-links a:hover { color: var(--text); }
+.nav-cta {
+  background: var(--blue); color: #fff;
+  border-radius: 10px; padding: 10px 22px;
+  font-size: 14px; font-weight: 700;
+  transition: background .15s, box-shadow .15s;
+  box-shadow: 0 0 20px rgba(59,130,246,.3);
+}
+.nav-cta:hover { background: #2563eb; box-shadow: 0 0 28px rgba(59,130,246,.5); }
+
+/* ── Hero ── */
+.hero-wrap {
+  position: relative;
+  padding: 130px 20px 100px;
+  text-align: center;
+  overflow: hidden;
+}
+.hero-bg {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(59,130,246,.2) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 40% at 20% 80%, rgba(99,102,241,.08) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 40% at 80% 70%, rgba(59,130,246,.06) 0%, transparent 60%);
+}
+.hero-grid {
+  position: absolute; inset: 0; pointer-events: none; opacity: .04;
+  background-image: linear-gradient(var(--blue) 1px, transparent 1px), linear-gradient(90deg, var(--blue) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black, transparent);
+}
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(59,130,246,.08);
+  border: 1px solid rgba(59,130,246,.2);
+  color: #60a5fa;
+  border-radius: 100px; padding: 7px 20px;
+  font-size: 13px; font-weight: 600;
+  margin-bottom: 36px;
+  position: relative;
+}
+.badge-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+.hero h1 {
+  font-size: clamp(44px, 7vw, 80px);
+  font-weight: 900; line-height: 1.02;
+  letter-spacing: -3px;
+  margin-bottom: 24px;
+  position: relative;
+}
 .hero h1 em { color: var(--blue); font-style: normal; }
-.hero-sub { font-size: 18px; color: var(--subtle); max-width: 540px; margin: 0 auto 44px; line-height: 1.75; }
+.hero h1 .line2 { color: var(--subtle); }
+.hero-sub {
+  font-size: 18px; color: var(--subtle);
+  max-width: 520px; margin: 0 auto 52px;
+  line-height: 1.8; position: relative;
+}
+.hero-actions {
+  display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+  position: relative; margin-bottom: 64px;
+}
+.btn-hero {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: var(--blue); color: #fff;
+  border-radius: 14px; padding: 18px 40px;
+  font-size: 17px; font-weight: 800;
+  box-shadow: 0 4px 32px rgba(59,130,246,.4);
+  transition: background .15s, transform .1s, box-shadow .15s;
+  border: none; cursor: pointer;
+}
+.btn-hero:hover { background: #2563eb; transform: translateY(-2px); box-shadow: 0 8px 40px rgba(59,130,246,.5); }
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border-hi);
+  color: var(--subtle);
+  border-radius: 14px; padding: 18px 32px;
+  font-size: 16px; font-weight: 600;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.btn-ghost:hover { border-color: var(--blue); color: var(--text); background: rgba(59,130,246,.06); }
 
-/* Pricing */
-.section { padding: 80px 20px; max-width: 1100px; margin: 0 auto; }
-.section-label { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--blue); margin-bottom: 12px; }
-.section-title { text-align: center; font-size: clamp(26px,4vw,38px); font-weight: 800; letter-spacing: -0.5px; margin-bottom: 10px; }
-.section-sub { text-align: center; color: var(--muted); font-size: 16px; margin-bottom: 52px; }
+/* Hero stat strip */
+.hero-stats {
+  display: flex; gap: 0; justify-content: center;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: var(--card);
+  max-width: 600px; margin: 0 auto;
+  position: relative; overflow: hidden;
+}
+.hero-stats::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(59,130,246,.4), transparent);
+}
+.stat {
+  flex: 1; padding: 22px 16px; text-align: center;
+  border-right: 1px solid var(--border);
+}
+.stat:last-child { border-right: none; }
+.stat-num { font-size: 26px; font-weight: 900; color: var(--text); letter-spacing: -1px; }
+.stat-num span { color: var(--blue); }
+.stat-lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
-.pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; max-width: 720px; margin: 0 auto; }
-.price-card { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 36px 32px; position: relative; transition: border-color .2s, transform .15s; }
-.price-card.featured { border-color: var(--blue); transform: scale(1.02); }
-.price-card.featured::before { content: 'Most Popular'; position: absolute; top: -13px; left: 50%; transform: translateX(-50%); background: var(--blue); color: #fff; font-size: 11px; font-weight: 700; padding: 4px 14px; border-radius: 100px; white-space: nowrap; }
-.price-card:hover { border-color: var(--blue); }
-.plan-name { font-size: 14px; font-weight: 700; color: var(--subtle); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-.plan-price { font-size: 52px; font-weight: 900; letter-spacing: -2px; color: var(--text); line-height: 1; margin-bottom: 4px; }
-.plan-price sup { font-size: 24px; vertical-align: super; }
-.plan-period { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
-.plan-features { list-style: none; margin-bottom: 32px; }
-.plan-features li { font-size: 14px; color: var(--subtle); padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; align-items: center; gap: 10px; }
-.plan-features li:last-child { border-bottom: none; }
-.plan-features li::before { content: '✓'; color: var(--green); font-weight: 700; flex-shrink: 0; }
+/* ── Section ── */
+.section { padding: 96px 20px; max-width: 1140px; margin: 0 auto; position: relative; }
+.section-label {
+  text-align: center; font-size: 11px; font-weight: 700;
+  letter-spacing: 3px; text-transform: uppercase;
+  color: var(--blue); margin-bottom: 14px;
+}
+.section-title {
+  text-align: center; font-size: clamp(28px,4vw,42px);
+  font-weight: 900; letter-spacing: -1px; margin-bottom: 12px;
+}
+.section-sub { text-align: center; color: var(--muted); font-size: 16px; margin-bottom: 60px; max-width: 500px; margin-left: auto; margin-right: auto; }
 
-.btn-buy { width: 100%; background: var(--blue); color: #fff; border: none; border-radius: 12px; padding: 16px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background .15s, transform .1s; }
-.btn-buy:hover { background: #2563eb; transform: translateY(-1px); }
-.btn-buy:disabled { opacity: .5; cursor: default; transform: none; }
+/* ── Features ── */
+.feat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+}
+@media(max-width:900px) { .feat-grid { grid-template-columns: repeat(2,1fr); } }
+@media(max-width:560px) { .feat-grid { grid-template-columns: 1fr; } }
 
-/* Checkout modal */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; align-items: center; justify-content: center; padding: 20px; }
+.feat-card {
+  background: var(--card);
+  padding: 32px 28px;
+  display: flex; flex-direction: column; gap: 14px;
+  transition: background .2s;
+}
+.feat-card:hover { background: var(--card-hi); }
+.feat-icon {
+  width: 48px; height: 48px;
+  background: var(--blue-dim); border: 1px solid rgba(59,130,246,.15);
+  border-radius: 12px;
+  display: grid; place-items: center; font-size: 24px;
+  flex-shrink: 0;
+}
+.feat-card h3 { font-size: 15px; font-weight: 700; color: var(--text); }
+.feat-card p { font-size: 13px; color: var(--muted); line-height: 1.7; }
+
+/* ── How it works ── */
+.steps-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  position: relative;
+}
+@media(max-width:760px) { .steps-row { grid-template-columns: 1fr 1fr; } }
+@media(max-width:440px) { .steps-row { grid-template-columns: 1fr; } }
+.step-item {
+  padding: 36px 28px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: border-color .2s;
+}
+.step-item:not(:last-child) { border-right: none; }
+.step-item:first-child { border-radius: 16px 0 0 16px; }
+.step-item:last-child { border-radius: 0 16px 16px 0; }
+.step-item:hover { border-color: var(--blue); z-index: 1; }
+@media(max-width:760px) {
+  .step-item:first-child { border-radius: 16px 0 0 0; }
+  .step-item:last-child { border-radius: 0 0 16px 0; }
+  .step-item:nth-child(2) { border-radius: 0 16px 0 0; border-right: 1px solid var(--border); }
+  .step-item:nth-child(3) { border-radius: 0 0 0 16px; border-right: none; }
+  .step-item:nth-child(2), .step-item:nth-child(4) { border-right: 1px solid var(--border); }
+}
+.step-num {
+  width: 38px; height: 38px; border-radius: 10px;
+  background: var(--blue-dim); border: 1px solid rgba(59,130,246,.25);
+  display: grid; place-items: center;
+  font-size: 16px; font-weight: 800; color: var(--blue);
+  margin-bottom: 18px;
+}
+.step-item h3 { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.step-item p { font-size: 13px; color: var(--muted); line-height: 1.7; }
+
+/* ── Pricing ── */
+.pricing-wrap { max-width: 460px; margin: 0 auto; }
+.price-card {
+  background: var(--card);
+  border: 1px solid var(--border-hi);
+  border-radius: 24px;
+  padding: 44px 40px;
+  position: relative;
+  overflow: hidden;
+}
+.price-card::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent);
+}
+.price-card::after {
+  content: '';
+  position: absolute; top: -80px; right: -80px;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(59,130,246,.12), transparent 70%);
+  pointer-events: none;
+}
+.plan-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--blue-dim); border: 1px solid rgba(59,130,246,.2);
+  color: #60a5fa; border-radius: 100px;
+  padding: 5px 14px; font-size: 12px; font-weight: 700;
+  margin-bottom: 28px;
+}
+.price-amount {
+  display: flex; align-items: flex-start; gap: 4px;
+  margin-bottom: 6px;
+}
+.price-currency { font-size: 28px; font-weight: 800; color: var(--subtle); margin-top: 10px; }
+.price-num { font-size: 72px; font-weight: 900; line-height: 1; letter-spacing: -4px; color: var(--text); }
+.price-period { font-size: 14px; color: var(--muted); margin-bottom: 36px; }
+.price-divider { height: 1px; background: var(--border); margin-bottom: 28px; }
+.price-features { list-style: none; margin-bottom: 36px; display: flex; flex-direction: column; gap: 2px; }
+.price-features li {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 10px;
+  font-size: 14px; color: var(--subtle);
+  transition: background .15s;
+}
+.price-features li:hover { background: rgba(255,255,255,.03); }
+.check {
+  width: 22px; height: 22px; flex-shrink: 0;
+  background: var(--green-dim); border-radius: 6px;
+  display: grid; place-items: center;
+  font-size: 12px; color: var(--green);
+}
+.btn-buy {
+  width: 100%; background: var(--blue); color: #fff;
+  border: none; border-radius: 14px; padding: 18px;
+  font-size: 16px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 4px 24px rgba(59,130,246,.35);
+  transition: background .15s, transform .1s, box-shadow .15s;
+}
+.btn-buy:hover { background: #2563eb; transform: translateY(-2px); box-shadow: 0 8px 32px rgba(59,130,246,.5); }
+.price-note { text-align: center; font-size: 12px; color: var(--muted); margin-top: 14px; }
+
+/* ── Testimonials / trust ── */
+.trust-strip {
+  display: flex; gap: 32px; justify-content: center; flex-wrap: wrap;
+  padding: 48px 20px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.trust-item { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+.trust-item strong { color: var(--subtle); }
+.trust-icon { font-size: 20px; }
+
+/* ── FAQ ── */
+.faq-list { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 4px; }
+.faq-item {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden;
+  transition: border-color .2s;
+}
+.faq-item:hover { border-color: var(--border-hi); }
+.faq-q {
+  width: 100%; padding: 18px 22px;
+  background: none; border: none; color: var(--text);
+  font-size: 15px; font-weight: 600; text-align: left;
+  cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+  gap: 16px;
+}
+.faq-arrow { color: var(--muted); font-size: 18px; transition: transform .2s; flex-shrink: 0; }
+.faq-item.open .faq-arrow { transform: rotate(45deg); }
+.faq-a { display: none; padding: 0 22px 18px; font-size: 14px; color: var(--muted); line-height: 1.75; }
+.faq-item.open .faq-a { display: block; }
+
+/* ── CTA banner ── */
+.cta-wrap { padding: 0 20px 100px; }
+.cta-banner {
+  max-width: 860px; margin: 0 auto;
+  background: linear-gradient(135deg, #0a2240 0%, #0f3060 50%, #0a2240 100%);
+  border: 1px solid rgba(59,130,246,.3);
+  border-radius: 28px; padding: 72px 48px;
+  text-align: center; position: relative; overflow: hidden;
+}
+.cta-banner::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at 50% 0%, rgba(59,130,246,.25), transparent 65%);
+}
+.cta-banner::after {
+  content: '';
+  position: absolute; bottom: -40px; left: 50%; transform: translateX(-50%);
+  width: 300px; height: 80px;
+  background: rgba(59,130,246,.15);
+  filter: blur(40px); border-radius: 50%;
+}
+.cta-banner h2 {
+  font-size: clamp(28px,5vw,48px); font-weight: 900;
+  color: #fff; letter-spacing: -1.5px; margin-bottom: 16px;
+  position: relative;
+}
+.cta-banner p { color: #93c5fd; font-size: 17px; margin-bottom: 40px; position: relative; line-height: 1.7; }
+
+/* ── Modal ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.75); backdrop-filter: blur(4px);
+  z-index: 200; align-items: center; justify-content: center; padding: 20px;
+}
 .modal-overlay.open { display: flex; }
-.modal { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 40px; width: 100%; max-width: 440px; }
-.modal h2 { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
-.modal p { color: var(--subtle); font-size: 14px; margin-bottom: 28px; }
-.field { margin-bottom: 18px; }
-.field label { display: block; font-size: 13px; font-weight: 600; color: var(--subtle); margin-bottom: 6px; }
-.field input { width: 100%; background: #0d0f1a; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-size: 14px; color: var(--text); outline: none; transition: border-color .15s; }
-.field input:focus { border-color: var(--blue); }
-.modal-actions { display: flex; gap: 12px; margin-top: 8px; }
-.btn-cancel { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--subtle); border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer; }
-.btn-confirm { flex: 2; background: var(--blue); color: #fff; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border-hi);
+  border-radius: 24px; padding: 44px 40px;
+  width: 100%; max-width: 460px;
+  position: relative; overflow: hidden;
+}
+.modal::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent);
+}
+.modal-icon { font-size: 36px; margin-bottom: 16px; }
+.modal h2 { font-size: 24px; font-weight: 900; letter-spacing: -0.5px; margin-bottom: 8px; }
+.modal-sub { color: var(--subtle); font-size: 14px; margin-bottom: 32px; line-height: 1.6; }
+.field { margin-bottom: 20px; }
+.field label { display: block; font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.field input {
+  width: 100%;
+  background: rgba(0,0,0,.3);
+  border: 1px solid var(--border-hi);
+  border-radius: 10px; padding: 13px 16px;
+  font-size: 15px; color: var(--text); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.field input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+.field input::placeholder { color: var(--muted); }
+.modal-summary {
+  background: rgba(59,130,246,.06);
+  border: 1px solid rgba(59,130,246,.15);
+  border-radius: 10px; padding: 14px 16px;
+  font-size: 13px; color: var(--subtle);
+  margin-bottom: 24px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.modal-summary strong { color: var(--text); font-size: 16px; }
+.modal-actions { display: flex; gap: 10px; }
+.btn-cancel {
+  flex: 1; background: transparent;
+  border: 1px solid var(--border-hi); color: var(--subtle);
+  border-radius: 12px; padding: 14px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.btn-cancel:hover { border-color: var(--blue); color: var(--text); }
+.btn-confirm {
+  flex: 2; background: var(--blue); color: #fff;
+  border: none; border-radius: 12px; padding: 14px;
+  font-size: 15px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 4px 20px rgba(59,130,246,.3);
+  transition: background .15s, box-shadow .15s;
+}
 .btn-confirm:hover { background: #2563eb; }
-#modal-error { color: #f87171; font-size: 13px; margin-top: 10px; display: none; }
+.btn-confirm:disabled { opacity: .5; cursor: default; box-shadow: none; }
+#modal-error { color: #f87171; font-size: 13px; margin-top: 12px; display: none; }
+.secure-note { display: flex; align-items: center; gap: 6px; justify-content: center; font-size: 12px; color: var(--muted); margin-top: 16px; }
 
-/* Features */
-.feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
-.feat-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; display: flex; gap: 16px; align-items: flex-start; transition: border-color .2s; }
-.feat-card:hover { border-color: var(--blue); }
-.feat-icon { width: 44px; height: 44px; flex-shrink: 0; background: var(--blue-dim); border-radius: 10px; display: grid; place-items: center; font-size: 22px; }
-.feat-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-.feat-card p { font-size: 13px; color: var(--muted); line-height: 1.6; }
+/* ── Footer ── */
+footer {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 40px 20px;
+  text-align: center;
+}
+.footer-links { display: flex; gap: 28px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
+.footer-links a { font-size: 13px; color: var(--muted); transition: color .15s; }
+.footer-links a:hover { color: var(--text); }
+.footer-copy { font-size: 13px; color: var(--muted); }
 
-/* Footer */
-footer { background: var(--surface); border-top: 1px solid var(--border); padding: 32px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+/* Responsive nav */
+@media(max-width:600px) {
+  nav { padding: 16px 20px; }
+  .nav-links { display: none; }
+  .hero-wrap { padding: 90px 20px 70px; }
+  .hero-stats { flex-wrap: wrap; }
+  .modal { padding: 32px 24px; }
+  .cta-banner { padding: 48px 28px; }
+}
 </style>
 </head>
 <body>
 
+<!-- Nav -->
 <nav>
-  <div class="nav-logo">Clan<span>Bot</span></div>
+  <div class="nav-logo">Clan<span class="dot">Bot</span></div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#how-it-works">How it works</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#faq">FAQ</a>
+  </div>
+  <button class="nav-cta" onclick="openModal()">Get Started →</button>
 </nav>
 
 <!-- Hero -->
 <div class="hero-wrap">
-  <div class="hero-glow"></div>
-  <div class="hero-badge">🎮 Rust+ Discord Companion Bot</div>
-  <div class="hero">
-    <h1>Your clan's<br><em>always watching</em></h1>
-    <p class="hero-sub">Raid alerts, smart switches, market tracking, live map events — all in your Discord. Setup takes 5 minutes.</p>
+  <div class="hero-bg"></div>
+  <div class="hero-grid"></div>
+
+  <div class="hero-badge">
+    <span class="badge-dot"></span>
+    Live — Rust servers monitored 24/7
   </div>
-</div>
 
-<!-- Pricing -->
-<div class="section">
-  <div class="section-label">Pricing</div>
-  <div class="section-title">Simple, per-server pricing</div>
-  <div class="section-sub">One bot. One Discord server. Cancel anytime.</div>
+  <div class="hero">
+    <h1>Your Rust clan,<br><em>always protected</em></h1>
+    <p class="hero-sub">Raid alerts, smart switches, market tracking and live map events — all inside your Discord. Dedicated bot. 5-minute setup.</p>
+  </div>
 
-  <div class="pricing-grid">
-    <div class="price-card featured">
-      <div class="plan-name">Standard</div>
-      <div class="plan-price"><sup>$</sup>9</div>
-      <div class="plan-period">per month · cancel anytime</div>
-      <ul class="plan-features">
-        <li>Dedicated bot instance</li>
-        <li>Raid alerts via FCM push</li>
-        <li>Smart switch control</li>
-        <li>Market tracker + alerts</li>
-        <li>Live map events</li>
-        <li>Team management</li>
-        <li>CCTV &amp; drone control</li>
-        <li>Web config panel</li>
-        <li>5-minute setup wizard</li>
-      </ul>
-      <button class="btn-buy" onclick="openModal()">Get Started →</button>
+  <div class="hero-actions">
+    <button class="btn-hero" onclick="openModal()">
+      🎮 Get ClanBot — £5/mo
+    </button>
+    <a href="#features" class="btn-ghost">See all features ↓</a>
+  </div>
+
+  <div class="hero-stats">
+    <div class="stat">
+      <div class="stat-num">45<span>+</span></div>
+      <div class="stat-lbl">Features</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">5<span>min</span></div>
+      <div class="stat-lbl">Setup time</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">24<span>/7</span></div>
+      <div class="stat-lbl">Monitoring</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">£<span>5</span></div>
+      <div class="stat-lbl">Per month</div>
     </div>
   </div>
 </div>
 
+<!-- Trust strip -->
+<div class="trust-strip">
+  <div class="trust-item"><span class="trust-icon">🔒</span><span>Secure Stripe checkout</span></div>
+  <div class="trust-item"><span class="trust-icon">⚡</span><span>Instant auto-provisioning</span></div>
+  <div class="trust-item"><span class="trust-icon">🔄</span><span>Cancel anytime, no lock-in</span></div>
+  <div class="trust-item"><span class="trust-icon">🤖</span><span>Dedicated bot — not shared</span></div>
+</div>
+
 <!-- Features -->
 <div class="section" id="features">
-  <div class="section-label">What You Get</div>
-  <div class="section-title">Every feature your clan needs</div>
-  <div class="section-sub">Everything runs in your own Discord. No third-party dashboards.</div>
+  <div class="section-label">Features</div>
+  <div class="section-title">Everything your clan needs</div>
+  <div class="section-sub">Built exclusively for the Rust+ Companion API. No third-party dashboards — everything lives in your Discord.</div>
 
   <div class="feat-grid">
-    <div class="feat-card"><div class="feat-icon">🚨</div><div><h3>Raid Alerts</h3><p>Instant Discord ping when explosions hit near your base. Never get caught offline-raided.</p></div></div>
-    <div class="feat-card"><div class="feat-icon">⚡</div><div><h3>Smart Switches</h3><p>Toggle turrets, lights, and traps from Discord buttons. No more running to the base.</p></div></div>
-    <div class="feat-card"><div class="feat-icon">📈</div><div><h3>Market Tracker</h3><p>Live vending prices with alerts when items drop below your target price.</p></div></div>
-    <div class="feat-card"><div class="feat-icon">🗺️</div><div><h3>Live Map Events</h3><p>Automatic alerts for cargo, patrol heli, Bradley, chinook drops, oil rig and vendors.</p></div></div>
-    <div class="feat-card"><div class="feat-icon">👥</div><div><h3>Team Management</h3><p>See who's online, track members on the map, assign team leader, AFK-kick idle players.</p></div></div>
-    <div class="feat-card"><div class="feat-icon">📷</div><div><h3>CCTV &amp; Drones</h3><p>Monument CCTV codes and drone control directly from Discord.</p></div></div>
+    <div class="feat-card">
+      <div class="feat-icon">🚨</div>
+      <h3>Raid Alerts</h3>
+      <p>Instant Discord ping the moment explosions are detected near your base. Get an FCM push notification even when Rust is closed — never get caught offline-raided again.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">⚡</div>
+      <h3>Smart Switches</h3>
+      <p>Control your electrical switches — turrets, auto-turrets, lights, traps — directly from Discord buttons. No more running back to base to toggle defence systems.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">📈</div>
+      <h3>Market Tracker</h3>
+      <p>Live vending machine prices across the map. Subscribe to items and get alerts the moment something drops below your target price. Full price history included.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">🗺️</div>
+      <h3>Live Map Events</h3>
+      <p>Automatic alerts for every major event — Cargo Ship, Patrol Helicopter, Bradley APC, Chinook drops, Oil Rig lockdowns and travelling vendors.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">👥</div>
+      <h3>Team Management</h3>
+      <p>See who's online in real-time, track team members on the map, assign the team leader via dropdown, and AFK-kick idle players — all from a Discord panel.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">📷</div>
+      <h3>CCTV &amp; Drones</h3>
+      <p>Look up monument CCTV camera codes and control drones directly from Discord. Recon without ever leaving the app.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">💬</div>
+      <h3>In-Game Commands</h3>
+      <p>Type commands in Rust team chat to check cargo ship location, heli ETA, Bradley status, server time, population, crafting costs and more.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">⚙️</div>
+      <h3>Web Config Panel</h3>
+      <p>Tweak every notification, toggle features, and manage your team from a clean web panel. Changes apply instantly — no bot restart needed.</p>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">🎯</div>
+      <h3>Turret &amp; Sam Site Alerts</h3>
+      <p>Get notified when your auto-turrets or SAM sites are triggered. Know the moment your defences engage a threat.</p>
+    </div>
   </div>
 </div>
+
+<!-- How it works -->
+<div class="section" id="how-it-works">
+  <div class="section-label">Getting Started</div>
+  <div class="section-title">Up and running in 4 steps</div>
+  <div class="section-sub">The wizard walks you through everything — no technical knowledge required.</div>
+
+  <div class="steps-row">
+    <div class="step-item">
+      <div class="step-num">1</div>
+      <h3>Subscribe</h3>
+      <p>Pay securely via Stripe. Your dedicated bot instance is provisioned automatically within minutes.</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">2</div>
+      <h3>Invite the Bot</h3>
+      <p>Click the invite link from your setup email. The wizard handles all Discord permissions automatically.</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">3</div>
+      <h3>Link Steam</h3>
+      <p>Sign in with Steam via our secure OAuth flow. This connects your Rust+ Companion app to receive FCM push notifications.</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">4</div>
+      <h3>Pair &amp; Play</h3>
+      <p>Pair a Rust server in-bot and your Discord channels populate automatically. All features go live instantly.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Pricing -->
+<div class="section" id="pricing">
+  <div class="section-label">Pricing</div>
+  <div class="section-title">One plan. Everything included.</div>
+  <div class="section-sub">No feature tiers, no add-ons. Every feature available from day one.</div>
+
+  <div class="pricing-wrap">
+    <div class="price-card">
+      <div class="plan-tag">✦ Standard Plan</div>
+      <div class="price-amount">
+        <span class="price-currency">£</span>
+        <span class="price-num">5</span>
+      </div>
+      <div class="price-period">per month &nbsp;·&nbsp; cancel anytime</div>
+      <div class="price-divider"></div>
+      <ul class="price-features">
+        <li><span class="check">✓</span> Dedicated bot instance (not shared)</li>
+        <li><span class="check">✓</span> Raid alerts via FCM push — works offline</li>
+        <li><span class="check">✓</span> Smart switch control from Discord</li>
+        <li><span class="check">✓</span> Market tracker with price alerts</li>
+        <li><span class="check">✓</span> Live map events (cargo, heli, bradley...)</li>
+        <li><span class="check">✓</span> Team management panel</li>
+        <li><span class="check">✓</span> CCTV &amp; drone control</li>
+        <li><span class="check">✓</span> In-game team chat commands</li>
+        <li><span class="check">✓</span> Web config panel — no restarts</li>
+        <li><span class="check">✓</span> Turret &amp; SAM site alerts</li>
+        <li><span class="check">✓</span> 5-minute guided setup wizard</li>
+      </ul>
+      <button class="btn-buy" onclick="openModal()">Get ClanBot Now →</button>
+    </div>
+    <div class="price-note">🔒 Secure checkout via Stripe &nbsp;·&nbsp; Cancel anytime from your Stripe portal</div>
+  </div>
+</div>
+
+<!-- FAQ -->
+<div class="section" id="faq">
+  <div class="section-label">FAQ</div>
+  <div class="section-title">Common questions</div>
+  <div class="section-sub"></div>
+
+  <div class="faq-list">
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        Do I need to host anything myself?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">No. We host the bot on our servers. You just follow the setup wizard to connect your Discord and Steam account. Nothing to install or maintain.</div>
+    </div>
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        How do raid alerts work?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">ClanBot uses the Rust+ Companion App's FCM (Firebase Cloud Messaging) push notification system. When explosions are detected near your Tool Cupboard, you get an instant Discord ping — even if Rust isn't running. You'll need to pair your Rust+ app during setup.</div>
+    </div>
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        Is this bot per Discord server or per Rust server?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">Per Discord server. One subscription gives you one dedicated bot in one Discord server. You can pair multiple Rust game servers within that Discord.</div>
+    </div>
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        How long does setup take?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">Under 5 minutes for most people. After payment you'll receive an email with your setup link. The wizard walks you through inviting the bot, linking Steam, and pairing your first Rust server.</div>
+    </div>
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        Can I cancel anytime?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">Yes. Cancel anytime from your Stripe customer portal — no questions asked, no cancellation fees. Your bot runs until the end of the billing period.</div>
+    </div>
+    <div class="faq-item">
+      <button class="faq-q" onclick="toggleFaq(this)">
+        Does it work every wipe?
+        <span class="faq-arrow">+</span>
+      </button>
+      <div class="faq-a">Yes. On wipe day, simply pair the new server in the bot using the Discord command. Your Discord channels carry over and everything reconnects automatically.</div>
+    </div>
+  </div>
+</div>
+
+<!-- CTA banner -->
+<div class="cta-wrap">
+  <div class="cta-banner">
+    <h2>Stop getting offline raided.</h2>
+    <p>Get your dedicated ClanBot instance up and running in 5 minutes.<br>Everything included. £5/month. Cancel anytime.</p>
+    <button class="btn-hero" onclick="openModal()" style="position:relative;">
+      🎮 Get Started — £5/month
+    </button>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer>
+  <div class="footer-links">
+    <a href="#features">Features</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#faq">FAQ</a>
+  </div>
+  <div class="footer-copy">&copy; 2026 ClanBot &mdash; Built for Rust clans.</div>
+</footer>
 
 <!-- Checkout Modal -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
+    <div class="modal-icon">🎮</div>
     <h2>Get ClanBot</h2>
-    <p>Enter your details and you'll be redirected to secure checkout. Your bot is provisioned automatically after payment.</p>
+    <p class="modal-sub">Enter your details below. You'll be sent to secure Stripe checkout — your bot is provisioned automatically after payment.</p>
     <div class="field">
       <label>Your Name</label>
       <input type="text" id="name" placeholder="Commander">
@@ -160,23 +728,37 @@ footer { background: var(--surface); border-top: 1px solid var(--border); paddin
       <label>Email Address</label>
       <input type="email" id="email" placeholder="you@example.com">
     </div>
+    <div class="modal-summary">
+      <span>ClanBot Standard — monthly</span>
+      <strong>£5.00</strong>
+    </div>
     <div id="modal-error"></div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
-      <button class="btn-confirm" id="confirm-btn" onclick="startCheckout()">Checkout →</button>
+      <button class="btn-confirm" id="confirm-btn" onclick="startCheckout()">Pay with Stripe →</button>
     </div>
+    <div class="secure-note">🔒 Secured by Stripe &nbsp;·&nbsp; Cancel anytime</div>
   </div>
 </div>
 
-<footer>&copy; 2026 ClanBot &mdash; Built for Rust clans.</footer>
-
 <script>
-function openModal() { document.getElementById('modal').classList.add('open'); }
+function openModal() {
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('name').focus(), 100);
+}
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
 
 document.getElementById('modal').addEventListener('click', e => {
   if (e.target === document.getElementById('modal')) closeModal();
 });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+function toggleFaq(btn) {
+  const item = btn.closest('.faq-item');
+  const isOpen = item.classList.contains('open');
+  document.querySelectorAll('.faq-item.open').forEach(i => i.classList.remove('open'));
+  if (!isOpen) item.classList.add('open');
+}
 
 async function startCheckout() {
   const name  = document.getElementById('name').value.trim();
@@ -185,10 +767,14 @@ async function startCheckout() {
   const btn   = document.getElementById('confirm-btn');
 
   err.style.display = 'none';
-  if (!email || !email.includes('@')) { err.textContent = 'Please enter a valid email.'; err.style.display = 'block'; return; }
+  if (!email || !email.includes('@')) {
+    err.textContent = 'Please enter a valid email address.';
+    err.style.display = 'block';
+    return;
+  }
 
   btn.disabled = true;
-  btn.textContent = 'Redirecting…';
+  btn.textContent = 'Redirecting to Stripe…';
 
   try {
     const res = await fetch('/api/checkout', {
@@ -200,16 +786,16 @@ async function startCheckout() {
     if (data.url) {
       window.location.href = data.url;
     } else {
-      err.textContent = data.error || 'Something went wrong. Try again.';
+      err.textContent = data.error || 'Something went wrong. Please try again.';
       err.style.display = 'block';
       btn.disabled = false;
-      btn.textContent = 'Checkout →';
+      btn.textContent = 'Pay with Stripe →';
     }
-  } catch (e) {
+  } catch {
     err.textContent = 'Network error. Please try again.';
     err.style.display = 'block';
     btn.disabled = false;
-    btn.textContent = 'Checkout →';
+    btn.textContent = 'Pay with Stripe →';
   }
 }
 </script>
