@@ -1,0 +1,7 @@
+# Auto-HTTPS in front of the sales site. Set DOMAIN in .env (e.g.
+# sales.yourdomain.com) and point a DNS A record at this host.
+# Make sure SALES_URL in .env matches https://<DOMAIN> so Steam + Stripe
+# redirects line up.
+{$DOMAIN} {
+    reverse_proxy sales:4000
+}

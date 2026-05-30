@@ -1,0 +1,8 @@
+# Never copy the host's node_modules (Windows-built better-sqlite3 won't run on
+# Linux) — the image rebuilds it via `npm ci`.
+node_modules
+# Runtime SQLite state is a mounted volume, not baked into the image.
+data
+.env
+*.log
+npm-debug.log*

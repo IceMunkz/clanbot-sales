@@ -1,0 +1,35 @@
+# ClanBot Sales — standalone storefront + Pelican provisioning.
+# Runs independently of the bot. Copy .env.example → .env first.
+#
+#   docker compose up -d --build            # sales site on :4000
+#   docker compose --profile prod up -d     # also front it with auto-HTTPS Caddy
+#
+services:
+  sales:
+    build: .
+    image: clanbot-sales
+    container_name: clanbot-sales
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${SALES_PORT:-4000}:4000"
+    volumes:
+      - ./data:/app/data
+
+  # Optional: auto-HTTPS reverse proxy. Set DOMAIN in .env and add a DNS record.
+  caddy:
+    image: caddy:2-alpine
+    container_name: clanbot-sales-caddy
+    restart: unless-stopped
+    profiles: ["prod"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+    depends_on:
+      - sales

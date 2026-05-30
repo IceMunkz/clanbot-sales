@@ -16,8 +16,21 @@ const STRIPE_WHSEC  = process.env.STRIPE_WEBHOOK_SECRET;
 const PRICE_ID      = process.env.STRIPE_PRICE_ID;        // monthly recurring price
 const SUCCESS_URL   = process.env.SUCCESS_URL || `http://localhost:${PORT}/success`;
 const CANCEL_URL    = process.env.CANCEL_URL  || `http://localhost:${PORT}/`;
-const ADMIN_TOKEN   = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString('hex');
+const ADMIN_TOKEN   = (() => {
+    if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
+    // Never fall back to random value - require explicit token in production
+    throw new Error(
+        '[FATAL] ADMIN_TOKEN must be set in .env for production security. ' +
+        'Cannot fall back to insecure defaults.'
+    );
+})();
 const PUBLIC_DIR    = path.join(__dirname, 'public');
+const SALES_URL     = process.env.SALES_URL || `http://localhost:${PORT}`;
+/* Secret for the signed Steam cookie. Falls back to ADMIN_TOKEN (always set)
+   so the cookie is still tamper-proof even if SALES_SESSION_SECRET is unset. */
+const SESSION_SECRET = process.env.SALES_SESSION_SECRET || ADMIN_TOKEN;
+const STEAM_COOKIE  = 'sales_steam';
+const STEAM_TTL_MS  = 60 * 60 * 1000; /* 1 hour to complete checkout */
 
 /* ── Stripe thin client (no npm, raw HTTPS) ─────────────────────────── */
 function stripePost(endpoint, params) {
@@ -68,50 +81,90 @@ function stripeGet(endpoint) {
     });
 }
 
+/* ── Steam OpenID verify (raw HTTPS POST, no SDK) ────────────────────── */
+function steamVerifyPost(params) {
+    return new Promise((resolve, reject) => {
+        const body = new URLSearchParams(params).toString();
+        const req = https.request({
+            hostname: 'steamcommunity.com',
+            path: '/openid/login',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Content-Length': Buffer.byteLength(body),
+            },
+        }, res => {
+            let data = '';
+            res.on('data', c => data += c);
+            res.on('end', () => resolve(data));
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/* ── Idempotency mutex: chains concurrent calls per order key ─────────── */
+const provisionLocks = new Map();
+
 /* ── Provisioning ────────────────────────────────────────────────────── */
-async function provisionOrder(orderId) {
-    const order = DB.getOrder(orderId);
-    if (!order) throw new Error('Order not found');
+async function provisionOrder(orderId, eventId) {
+    /* Fast-path: already processed this exact event */
+    if (eventId && DB.getProcessedEvent(eventId)) {
+        console.log(`[provision] Event ${eventId} already processed — skipping`);
+        return;
+    }
 
-    DB.updateOrder(orderId, { status: 'provisioning' });
+    /* In-process mutex: serialize concurrent calls for the same order */
+    const lockKey = `order:${orderId}`;
+    const prev = provisionLocks.get(lockKey) || Promise.resolve();
+    let release;
+    const current = prev.then(() => new Promise(r => { release = r; }));
+    provisionLocks.set(lockKey, current.catch(() => {}));
 
-    const portRow = DB.getAvailablePort();
-    if (!portRow) throw new Error('No ports available (3006-3050 exhausted)');
+    try {
+        await prev; /* wait for any prior call to finish */
 
-    const tokenRow = DB.getAvailableToken();
-    if (!tokenRow) throw new Error('Token pool empty — add more bot tokens in admin panel');
+        const order = DB.getOrder(orderId);
+        if (!order) throw new Error('Order not found');
 
-    /* Reserve port + token */
-    DB.assignPort(portRow.port, orderId);
-    DB.assignToken(tokenRow.id, orderId);
-    DB.updateOrder(orderId, {
-        pelican_port: portRow.port,
-        discord_token_id: tokenRow.id,
-    });
+        /* Atomic reserve: idempotency + race protection in one transaction */
+        const reserved = DB.reserveResourcesForOrder(orderId, eventId || `manual:${orderId}:${Date.now()}`);
+        if (reserved.alreadyDone) {
+            console.log(`[provision] Order ${orderId} already provisioned — skipping`);
+            return;
+        }
 
-    const { serverId, setupUrl } = await Pelican.createServer({
-        orderId,
-        customerEmail: order.customer_email,
-        port: portRow.port,
-        discordToken: tokenRow.bot_token,
-        discordClientId: tokenRow.client_id,
-    });
+        const { port, token: tokenRow } = reserved;
 
-    DB.updateOrder(orderId, {
-        status: 'active',
-        pelican_server_id: serverId,
-        setup_url: setupUrl,
-        provisioned_at: new Date().toISOString(),
-    });
+        const { serverId, identifier, setupUrl } = await Pelican.createServer({
+            orderId,
+            customerEmail: order.customer_email,
+            port,
+            discordToken: tokenRow.bot_token,
+            discordClientId: tokenRow.client_id,
+        });
 
-    await Mailer.sendProvisionedEmail({
-        to: order.customer_email,
-        name: order.customer_name,
-        setupUrl,
-        orderId,
-    });
+        DB.updateOrder(orderId, {
+            status: 'active',
+            pelican_server_id: serverId,
+            pelican_identifier: identifier || null,
+            setup_url: setupUrl,
+            provisioned_at: new Date().toISOString(),
+        });
 
-    console.log(`[provision] Order ${orderId} → port ${portRow.port}, server ${serverId}`);
+        await Mailer.sendProvisionedEmail({
+            to: order.customer_email,
+            name: order.customer_name,
+            setupUrl,
+            orderId,
+        });
+
+        console.log(`[provision] Order ${orderId} → port ${port}, server ${serverId}`);
+    } finally {
+        if (release) release();
+        if (provisionLocks.get(lockKey) === current) provisionLocks.delete(lockKey);
+    }
 }
 
 /* ── Request helpers ─────────────────────────────────────────────────── */
@@ -148,7 +201,7 @@ function serveFile(res, filePath, contentType) {
 
 function isAdmin(req) {
     const auth = req.headers['authorization'] || '';
-    const cookie = parseCookies(req)['admin_token'] || '';
+    const cookie = parseCookies(req)['admin_session'] || '';
     return auth === `Bearer ${ADMIN_TOKEN}` || cookie === ADMIN_TOKEN;
 }
 
@@ -161,6 +214,73 @@ function parseCookies(req) {
     return out;
 }
 
+/* ── Steam session cookie (HMAC-signed, short-lived) ─────────────────── */
+function signSteam(steamId) {
+    const payload = Buffer.from(JSON.stringify({ steamId, iat: Date.now() })).toString('base64url');
+    const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+    return `${payload}.${sig}`;
+}
+
+function verifySteam(req) {
+    const raw = parseCookies(req)[STEAM_COOKIE];
+    if (!raw) return null;
+    const [payload, sig] = raw.split('.');
+    if (!payload || !sig) return null;
+    const expect = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+    try {
+        if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+        const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        if (!data.steamId || Date.now() - data.iat > STEAM_TTL_MS) return null;
+        return String(data.steamId);
+    } catch { return null; }
+}
+
+/* ── Route: GET /auth/steam — kick off Steam OpenID ──────────────────── */
+function handleSteamLogin(req, res) {
+    const steamUrl = 'https://steamcommunity.com/openid/login?' + new URLSearchParams({
+        'openid.ns':         'http://specs.openid.net/auth/2.0',
+        'openid.mode':       'checkid_setup',
+        'openid.return_to':  `${SALES_URL}/auth/steam/callback`,
+        'openid.realm':      SALES_URL + '/',
+        'openid.identity':   'http://specs.openid.net/auth/2.0/identifier_select',
+        'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+    }).toString();
+    redirect(res, steamUrl);
+}
+
+/* ── Route: GET /auth/steam/callback — verify + set cookie ───────────── */
+async function handleSteamCallback(req, res) {
+    const u = new URL(req.url, SALES_URL);
+    const q = Object.fromEntries(u.searchParams.entries());
+    if (q['openid.mode'] !== 'id_res') return redirect(res, '/?steam=error');
+
+    /* Re-sign every openid.* param back to Steam to confirm the assertion. */
+    const verifyParams = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) {
+        if (k.startsWith('openid.')) verifyParams.set(k, v);
+    }
+    verifyParams.set('openid.mode', 'check_authentication');
+
+    let steamId = null;
+    try {
+        const body = await steamVerifyPost(verifyParams);
+        if (!body.includes('is_valid:true')) return redirect(res, '/?steam=error');
+        const m = (q['openid.claimed_id'] || '').match(/\/openid\/id\/(\d+)$/);
+        steamId = m ? m[1] : null;
+    } catch (e) {
+        console.error('[steam] verify failed:', e.message);
+        return redirect(res, '/?steam=error');
+    }
+    if (!steamId) return redirect(res, '/?steam=error');
+
+    const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+    res.writeHead(302, {
+        'Set-Cookie': `${STEAM_COOKIE}=${signSteam(steamId)}; HttpOnly; SameSite=Lax${secure}; Path=/; Max-Age=3600`,
+        Location: '/?steam=ok',
+    });
+    res.end();
+}
+
 /* ── Route: POST /api/checkout ───────────────────────────────────────── */
 async function handleCheckout(req, res) {
     const raw = await readBody(req);
@@ -168,6 +288,10 @@ async function handleCheckout(req, res) {
     try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
 
     if (!STRIPE_SECRET || !PRICE_ID) return json(res, 503, { error: 'Stripe not configured' });
+
+    /* Require a verified Steam identity before taking payment. */
+    const steamId = verifySteam(req);
+    if (!steamId) return json(res, 401, { error: 'Sign in with Steam first' });
 
     try {
         const session = await stripePost('checkout/sessions', {
@@ -179,6 +303,8 @@ async function handleCheckout(req, res) {
             cancel_url: CANCEL_URL,
             'customer_email': body.email || '',
             'metadata[customer_name]': body.name || '',
+            'metadata[steam_id]': steamId,
+            'subscription_data[metadata][steam_id]': steamId,
         });
 
         /* Create pending order immediately so we can track it */
@@ -187,6 +313,7 @@ async function handleCheckout(req, res) {
             customerEmail: body.email || '',
             customerName: body.name || '',
             plan: 'standard',
+            steamId,
         });
 
         json(res, 200, { url: session.url });
@@ -225,32 +352,69 @@ async function handleWebhook(req, res) {
                     console.warn('[webhook] Unknown session:', session.id);
                     return;
                 }
-                DB.updateOrder(order.id, { stripe_payment: session.payment_intent || session.subscription });
-                await provisionOrder(order.id);
+                /* Managed pilot: payment is confirmed, but an admin approves the
+                   provision. Record payment + subscription and flag for review. */
+                DB.updateOrder(order.id, {
+                    status: 'awaiting_approval',
+                    stripe_payment: session.payment_intent || session.subscription || null,
+                    stripe_subscription: session.subscription || null,
+                    steam_id: session.metadata?.steam_id || order.steam_id || null,
+                });
+                console.log(`[webhook] Order ${order.id} paid → awaiting_approval`);
+                try {
+                    await Mailer.sendAdminNewOrderEmail({
+                        orderId: order.id,
+                        customerEmail: order.customer_email,
+                        steamId: session.metadata?.steam_id || order.steam_id,
+                    });
+                } catch (e) { console.error('[webhook] admin email failed:', e.message); }
             } else if (event.type === 'customer.subscription.deleted') {
-                /* Optional: handle cancellations */
-                console.log('[webhook] Subscription cancelled:', event.data.object.id);
+                await handleSubscriptionCanceled(event.data.object);
+            } else if (event.type === 'invoice.payment_failed') {
+                await handlePaymentFailed(event.data.object);
+            } else if (event.type === 'invoice.paid') {
+                await handleInvoicePaid(event.data.object);
             }
         } catch (e) {
-            console.error('[webhook] Provision failed:', e.message);
-            /* Try to update order with error */
-            try {
-                const session = event.data?.object;
-                if (session?.id) {
-                    const order = DB.getOrderBySession(session.id);
-                    if (order) {
-                        DB.updateOrder(order.id, { status: 'failed', error_msg: e.message });
-                        await Mailer.sendFailureEmail({
-                            to: order.customer_email,
-                            name: order.customer_name,
-                            orderId: order.id,
-                            error: e.message,
-                        });
-                    }
-                }
-            } catch {}
+            console.error('[webhook] handler failed:', e.message);
         }
     });
+}
+
+/* ── Subscription lifecycle → bot access ─────────────────────────────── */
+async function handleSubscriptionCanceled(sub) {
+    const order = DB.getOrderBySubscription(sub.id);
+    if (!order) { console.warn('[webhook] cancel: no order for subscription', sub.id); return; }
+    if (order.pelican_server_id) {
+        try { await Pelican.suspendServer(order.pelican_server_id); }
+        catch (e) { console.error('[webhook] suspend failed:', e.message); }
+    }
+    DB.updateOrder(order.id, { status: 'suspended' });
+    console.log(`[webhook] Order ${order.id} suspended (subscription canceled)`);
+    try { await Mailer.sendSuspendedEmail({ to: order.customer_email, name: order.customer_name, orderId: order.id }); }
+    catch (e) { console.error('[webhook] suspended email failed:', e.message); }
+}
+
+async function handlePaymentFailed(invoice) {
+    const order = invoice.subscription ? DB.getOrderBySubscription(invoice.subscription) : null;
+    if (!order) return;
+    DB.updateOrder(order.id, { status: 'past_due' });
+    console.log(`[webhook] Order ${order.id} past_due (payment failed)`);
+}
+
+async function handleInvoicePaid(invoice) {
+    if (!invoice.subscription) return;
+    const order = DB.getOrderBySubscription(invoice.subscription);
+    if (!order) return;
+    /* Only act when the bot was paused; first/renewal invoices on an already
+       active (or awaiting-approval) order need nothing. */
+    if (order.status !== 'suspended' && order.status !== 'past_due') return;
+    if (order.pelican_server_id) {
+        try { await Pelican.unsuspendServer(order.pelican_server_id); }
+        catch (e) { console.error('[webhook] unsuspend failed:', e.message); }
+        DB.updateOrder(order.id, { status: 'active' });
+        console.log(`[webhook] Order ${order.id} resumed (invoice paid)`);
+    }
 }
 
 /* ── Stripe signature verification (manual, no SDK) ──────────────────── */
@@ -277,6 +441,32 @@ function verifyStripeSignature(rawBody, header, secret) {
 
 /* ── Admin API ───────────────────────────────────────────────────────── */
 async function handleAdmin(req, res, pathname) {
+    const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+    const cookieFlags = `HttpOnly; SameSite=Strict${secure}; Path=/; Max-Age=86400`;
+
+    /* POST /admin/login — set admin session cookie (exempt from auth guard) */
+    if (req.method === 'POST' && pathname === '/admin/login') {
+        const raw = await readBody(req);
+        let body;
+        try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (body.token !== ADMIN_TOKEN) return json(res, 401, { error: 'wrong token' });
+        res.writeHead(200, {
+            'Set-Cookie': `admin_session=${ADMIN_TOKEN}; ${cookieFlags}`,
+            'Content-Type': 'application/json',
+        });
+        return res.end(JSON.stringify({ ok: true }));
+    }
+
+    /* POST /admin/logout — clear admin session cookie */
+    if (req.method === 'POST' && pathname === '/admin/logout') {
+        res.writeHead(200, {
+            'Set-Cookie': `admin_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+            'Content-Type': 'application/json',
+        });
+        return res.end(JSON.stringify({ ok: true }));
+    }
+
+    /* All other /admin/* routes require auth */
     if (!isAdmin(req)) return json(res, 401, { error: 'unauthorized' });
 
     /* GET /admin/stats */
@@ -303,28 +493,45 @@ async function handleAdmin(req, res, pathname) {
         }
     }
 
-    /* POST /admin/provision/:orderId — manual re-provision */
+    /* POST /admin/provision/:orderId — approve/provision (or re-provision) */
     if (req.method === 'POST' && pathname.startsWith('/admin/provision/')) {
         const orderId = parseInt(pathname.split('/').pop(), 10);
         try {
             await provisionOrder(orderId);
             return json(res, 200, { ok: true });
         } catch (e) {
+            try { DB.updateOrder(orderId, { status: 'failed', error_msg: e.message }); } catch {}
             return json(res, 500, { error: e.message });
         }
     }
 
-    /* POST /admin/login — set admin cookie */
-    if (req.method === 'POST' && pathname === '/admin/login') {
-        const raw = await readBody(req);
-        let body;
-        try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
-        if (body.token !== ADMIN_TOKEN) return json(res, 401, { error: 'wrong token' });
-        res.writeHead(200, {
-            'Set-Cookie': `admin_token=${ADMIN_TOKEN}; HttpOnly; Path=/; Max-Age=86400`,
-            'Content-Type': 'application/json',
-        });
-        return res.end(JSON.stringify({ ok: true }));
+    /* POST /admin/{suspend|resume|restart|delete}/:orderId — lifecycle controls */
+    const action = pathname.match(/^\/admin\/(suspend|resume|restart|delete)\/(\d+)$/);
+    if (req.method === 'POST' && action) {
+        const [, verb, idStr] = action;
+        const orderId = parseInt(idStr, 10);
+        const order = DB.getOrder(orderId);
+        if (!order) return json(res, 404, { error: 'order not found' });
+        try {
+            if (verb === 'suspend') {
+                if (order.pelican_server_id) await Pelican.suspendServer(order.pelican_server_id);
+                DB.updateOrder(orderId, { status: 'suspended' });
+            } else if (verb === 'resume') {
+                if (order.pelican_server_id) await Pelican.unsuspendServer(order.pelican_server_id);
+                DB.updateOrder(orderId, { status: 'active' });
+            } else if (verb === 'restart') {
+                if (!order.pelican_identifier) return json(res, 400, { error: 'no server identifier — provision first' });
+                await Pelican.powerSignal(order.pelican_identifier, 'restart');
+            } else if (verb === 'delete') {
+                if (order.pelican_server_id) await Pelican.deleteServer(order.pelican_server_id);
+                DB.releaseResourcesForOrder(orderId);
+                DB.updateOrder(orderId, { status: 'deleted' });
+            }
+            return json(res, 200, { ok: true });
+        } catch (e) {
+            console.error(`[admin] ${verb} order ${orderId} failed:`, e.message);
+            return json(res, 500, { error: e.message });
+        }
     }
 
     json(res, 404, { error: 'not found' });
@@ -352,6 +559,11 @@ const server = http.createServer(async (req, res) => {
             return serveFile(res, file, mime);
         }
 
+        /* Steam OpenID (sign in before checkout) */
+        if (pathname === '/auth/steam'          && req.method === 'GET') return handleSteamLogin(req, res);
+        if (pathname === '/auth/steam/callback' && req.method === 'GET') return await handleSteamCallback(req, res);
+        if (pathname === '/api/steam/me'        && req.method === 'GET') return json(res, 200, { steamId: verifySteam(req) });
+
         /* API */
         if (pathname === '/api/checkout' && req.method === 'POST') return await handleCheckout(req, res);
         if (pathname === '/webhook'       && req.method === 'POST') return await handleWebhook(req, res);
@@ -366,6 +578,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
     console.log(`[ClanBot Sales] Listening on port ${PORT}`);
-    console.log(`[ClanBot Sales] Admin token: ${ADMIN_TOKEN}`);
     console.log(`[ClanBot Sales] Token pool: ${DB.tokenPoolCount()} available`);
 });

@@ -62,8 +62,18 @@ tr:last-child td { border-bottom: none; }
 .badge.pending { background: rgba(251,146,60,.15); color: var(--orange); }
 .badge.provisioning { background: rgba(59,130,246,.15); color: #60a5fa; }
 .badge.failed { background: rgba(239,68,68,.15); color: var(--red); }
+.badge.awaiting_approval { background: rgba(251,146,60,.15); color: var(--orange); }
+.badge.suspended { background: rgba(148,163,184,.15); color: var(--subtle); }
+.badge.past_due { background: rgba(239,68,68,.15); color: var(--red); }
+.badge.deleted { background: rgba(100,116,139,.15); color: var(--muted); }
 .provision-btn { background: var(--blue); color: #fff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .provision-btn:hover { background: #2563eb; }
+.act-btn { border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 600; cursor: pointer; margin-right: 4px; color: #fff; }
+.act-btn.green { background: #16a34a; }
+.act-btn.blue { background: var(--blue); }
+.act-btn.orange { background: #d97706; }
+.act-btn.red { background: var(--red); }
+.act-btn:hover { opacity: .85; }
 code { font-family: monospace; font-size: 11px; color: #60a5fa; }
 </style>
 </head>
@@ -121,6 +131,7 @@ code { font-family: monospace; font-size: 11px; color: #60a5fa; }
             <tr>
               <th>#</th>
               <th>Email</th>
+              <th>Steam</th>
               <th>Status</th>
               <th>Port</th>
               <th>Setup URL</th>
@@ -130,7 +141,7 @@ code { font-family: monospace; font-size: 11px; color: #60a5fa; }
             </tr>
           </thead>
           <tbody id="orders-tbody">
-            <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted);">Loading…</td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -183,7 +194,7 @@ async function loadData() {
 
   const tbody = document.getElementById('orders-tbody');
   if (!data.orders.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted);">No orders yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">No orders yet.</td></tr>';
     return;
   }
 
@@ -191,12 +202,13 @@ async function loadData() {
     <tr>
       <td style="color:var(--text);font-weight:600;">#${o.id}</td>
       <td>${o.customer_email}</td>
-      <td><span class="badge ${o.status}">${o.status}</span></td>
+      <td>${o.steam_id ? `<code>${o.steam_id}</code>` : '—'}</td>
+      <td><span class="badge ${o.status}">${(o.status || '').replace(/_/g,' ')}</span></td>
       <td>${o.pelican_port || '—'}</td>
       <td>${o.setup_url ? `<a href="${o.setup_url}/setup" target="_blank" style="color:#60a5fa;">${o.setup_url}</a>` : '—'}</td>
       <td>${o.pelican_server_id || '—'}</td>
       <td style="font-size:12px;">${o.created_at?.slice(0,16).replace('T',' ') || '—'}</td>
-      <td>${o.status === 'failed' || o.status === 'pending' ? `<button class="provision-btn" onclick="reprovision(${o.id})">Re-provision</button>` : ''}</td>
+      <td style="white-space:nowrap;">${rowActions(o)}</td>
     </tr>
   `).join('');
 }
@@ -220,11 +232,34 @@ async function addToken() {
   }
 }
 
-async function reprovision(orderId) {
-  if (!confirm(`Re-provision order #${orderId}?`)) return;
+function rowActions(o) {
+  const s = o.status;
+  if (s === 'awaiting_approval' || s === 'pending' || s === 'failed')
+    return `<button class="act-btn green" onclick="provision(${o.id})">Provision</button>`;
+  if (s === 'active')
+    return `<button class="act-btn blue" onclick="lifecycle('restart',${o.id})">Restart</button>`
+         + `<button class="act-btn orange" onclick="lifecycle('suspend',${o.id})">Suspend</button>`
+         + `<button class="act-btn red" onclick="lifecycle('delete',${o.id})">Delete</button>`;
+  if (s === 'suspended' || s === 'past_due')
+    return `<button class="act-btn green" onclick="lifecycle('resume',${o.id})">Resume</button>`
+         + `<button class="act-btn red" onclick="lifecycle('delete',${o.id})">Delete</button>`;
+  return '';
+}
+
+async function provision(orderId) {
+  if (!confirm(`Provision order #${orderId}? This creates the customer's bot server.`)) return;
   const res = await apiFetch(`/admin/provision/${orderId}`, { method: 'POST' });
   const data = await res.json();
   if (res.ok) { alert('Provisioned!'); loadData(); }
+  else { alert('Error: ' + (data.error || 'unknown')); }
+}
+
+async function lifecycle(verb, orderId) {
+  const labels = { suspend: 'Suspend (pause)', resume: 'Resume', restart: 'Restart', delete: 'DELETE — frees the port + bot token' };
+  if (!confirm(`${labels[verb] || verb} order #${orderId}?`)) return;
+  const res = await apiFetch(`/admin/${verb}/${orderId}`, { method: 'POST' });
+  const data = await res.json();
+  if (res.ok) { loadData(); }
   else { alert('Error: ' + (data.error || 'unknown')); }
 }
 </script>

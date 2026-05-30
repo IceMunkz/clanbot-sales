@@ -433,6 +433,18 @@ nav {
 .btn-confirm:hover { background: #2563eb; }
 .btn-confirm:disabled { opacity: .5; cursor: default; box-shadow: none; }
 #modal-error { color: #f87171; font-size: 13px; margin-top: 12px; display: none; }
+.btn-steam {
+  width: 100%;
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  background: #1b2838; color: #c7d5e0;
+  border: 1px solid #2a475e; border-radius: 12px; padding: 15px;
+  font-size: 15px; font-weight: 700; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.btn-steam:hover { background: #2a475e; color: #fff; }
+.btn-steam svg { width: 18px; height: 18px; }
+.modal-note { font-size: 13px; margin-top: 12px; line-height: 1.5; }
+.modal-note.error { color: #f87171; }
 .secure-note { display: flex; align-items: center; gap: 6px; justify-content: center; font-size: 12px; color: var(--muted); margin-top: 16px; }
 
 /* ── Footer ── */
@@ -719,34 +731,63 @@ footer {
   <div class="modal">
     <div class="modal-icon">🎮</div>
     <h2>Get ClanBot</h2>
-    <p class="modal-sub">Enter your details below. You'll be sent to secure Stripe checkout — your bot is provisioned automatically after payment.</p>
-    <div class="field">
-      <label>Your Name</label>
-      <input type="text" id="name" placeholder="Commander">
+
+    <!-- Step 1: Steam sign-in -->
+    <div id="steam-step">
+      <p class="modal-sub">First, verify your identity with Steam — it links your bot to your account and takes a few seconds.</p>
+      <button class="btn-steam" onclick="location.href='/auth/steam'">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.6 2 2.2 6.1 2 11.3l5.4 2.2c.5-.3 1-.5 1.6-.5h.1l2.4-3.5v-.1c0-2.1 1.7-3.8 3.8-3.8s3.8 1.7 3.8 3.8-1.7 3.8-3.8 3.8h-.1l-3.4 2.5c0 .5-.1.9-.3 1.3-.6 1.6-2.4 2.4-4 1.8-1.2-.5-2-1.6-2.1-2.8l-3.8-1.6C3.4 18.9 7.3 22 12 22c5.5 0 10-4.5 10-10S17.5 2 12 2zm-3.9 15.2l-1.2-.5c.2.4.6.8 1.1 1 1 .4 2.2 0 2.6-1.1.2-.5.2-1.1 0-1.6s-.6-.9-1.1-1.1c-.5-.2-1-.2-1.5 0l1.3.5c.8.3 1.1 1.2.8 1.9-.3.8-1.2 1.2-1.9.9zm7.6-7.7c0-1.4-1.1-2.5-2.5-2.5s-2.5 1.1-2.5 2.5 1.1 2.5 2.5 2.5 2.5-1.1 2.5-2.5zm-4.4 0c0-1 .8-1.9 1.9-1.9s1.9.8 1.9 1.9-.8 1.9-1.9 1.9-1.9-.9-1.9-1.9z"/></svg>
+        Sign in through Steam
+      </button>
+      <div id="steam-error" class="modal-note error" style="display:none;">Steam sign-in failed. Please try again.</div>
     </div>
-    <div class="field">
-      <label>Email Address</label>
-      <input type="email" id="email" placeholder="you@example.com">
+
+    <!-- Step 2: details + checkout (revealed after Steam) -->
+    <div id="details-step" style="display:none;">
+      <p class="modal-sub">Signed in as <strong id="steam-who">Steam</strong>. Enter your details and you'll be sent to secure Stripe checkout. Your bot is set up by our team shortly after payment (managed beta).</p>
+      <div class="field">
+        <label>Your Name</label>
+        <input type="text" id="name" placeholder="Commander">
+      </div>
+      <div class="field">
+        <label>Email Address</label>
+        <input type="email" id="email" placeholder="you@example.com">
+      </div>
+      <div class="modal-summary">
+        <span>ClanBot Standard — monthly</span>
+        <strong>£5.00</strong>
+      </div>
+      <div id="modal-error"></div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button class="btn-confirm" id="confirm-btn" onclick="startCheckout()">Pay with Stripe →</button>
+      </div>
+      <div class="secure-note">🔒 Secured by Stripe &nbsp;·&nbsp; Cancel anytime</div>
     </div>
-    <div class="modal-summary">
-      <span>ClanBot Standard — monthly</span>
-      <strong>£5.00</strong>
-    </div>
-    <div id="modal-error"></div>
-    <div class="modal-actions">
-      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
-      <button class="btn-confirm" id="confirm-btn" onclick="startCheckout()">Pay with Stripe →</button>
-    </div>
-    <div class="secure-note">🔒 Secured by Stripe &nbsp;·&nbsp; Cancel anytime</div>
   </div>
 </div>
 
 <script>
+let steamId = null;
 function openModal() {
   document.getElementById('modal').classList.add('open');
-  setTimeout(() => document.getElementById('name').focus(), 100);
+  /* Focus the name field only once the details step is visible. */
+  setTimeout(() => { const n = document.getElementById('name'); if (n && n.offsetParent !== null) n.focus(); }, 100);
 }
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+/* Reflect Steam sign-in state: show the Steam step or the details step. */
+async function refreshSteam() {
+  try {
+    const res = await fetch('/api/steam/me');
+    const data = await res.json();
+    steamId = data.steamId || null;
+  } catch { steamId = null; }
+  const signedIn = !!steamId;
+  document.getElementById('steam-step').style.display   = signedIn ? 'none' : 'block';
+  document.getElementById('details-step').style.display = signedIn ? 'block' : 'none';
+  if (signedIn) document.getElementById('steam-who').textContent = 'Steam ' + steamId;
+}
 
 document.getElementById('modal').addEventListener('click', e => {
   if (e.target === document.getElementById('modal')) closeModal();
@@ -782,6 +823,14 @@ async function startCheckout() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, email }),
     });
+    if (res.status === 401) {
+      /* Steam session expired — drop back to the sign-in step. */
+      await refreshSteam();
+      err.textContent = 'Your Steam sign-in expired. Please sign in again.';
+      err.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Pay with Stripe →';
+      return;
+    }
     const data = await res.json();
     if (data.url) {
       window.location.href = data.url;
@@ -798,6 +847,19 @@ async function startCheckout() {
     btn.textContent = 'Pay with Stripe →';
   }
 }
+
+/* On load: handle the Steam OpenID redirect-back, then sync state. */
+(function init() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('steam') === 'ok') openModal();
+  if (params.get('steam') === 'error') {
+    openModal();
+    const se = document.getElementById('steam-error');
+    if (se) se.style.display = 'block';
+  }
+  if (params.has('steam')) history.replaceState({}, '', location.pathname);
+  refreshSteam();
+})();
 </script>
 
 </body>

@@ -13,18 +13,26 @@ const PELICAN_USER = parseInt(process.env.PELICAN_USER_ID || '0', 10);  // defau
 const CREDENTIAL_SERVER_URL = process.env.CREDENTIAL_SERVER_URL || '';
 const GIT_REPO = process.env.GIT_REPO || '';
 const DOCKER_IMAGE = process.env.DOCKER_IMAGE || 'ghcr.io/ptero-eggs/yolks:nodejs_22';
+/* Power signals (start/stop/restart) live on the Client API and need a Client
+   API key (ptlc_...), which is distinct from the Application key (ptla_...). */
+const PELICAN_CLIENT_KEY = process.env.PELICAN_CLIENT_API_KEY || '';
+/* When true, log intended panel calls instead of hitting Pelican — lets the
+   full sales flow be exercised before a live panel/node exists. */
+const DRY_RUN = process.env.PELICAN_DRY_RUN === 'true' || process.env.PELICAN_DRY_RUN === '1';
 
-function request(method, endpoint, body) {
+function request(method, endpoint, body, opts = {}) {
+    const api = opts.api || 'application';            // 'application' | 'client'
+    const key = opts.key || PELICAN_KEY;
     return new Promise((resolve, reject) => {
         const parsed = url.parse(PELICAN_URL);
         const isHttps = parsed.protocol === 'https:';
         const options = {
             hostname: parsed.hostname,
             port: parsed.port || (isHttps ? 443 : 80),
-            path: `/api/application${endpoint}`,
+            path: `/api/${api}${endpoint}`,
             method,
             headers: {
-                'Authorization': `Bearer ${PELICAN_KEY}`,
+                'Authorization': `Bearer ${key}`,
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
             },
@@ -72,12 +80,17 @@ async function findAllocationId(port) {
 
 /* Create a server on Pelican and return the server object */
 async function createServer({ orderId, customerEmail, port, discordToken, discordClientId }) {
+    const setupUrl = `${CREDENTIAL_SERVER_URL}:${port}`;
+
+    if (DRY_RUN) {
+        console.log(`[pelican:DRY_RUN] createServer order=${orderId} port=${port} image=${DOCKER_IMAGE} → ${setupUrl}`);
+        return { serverId: `dry-${orderId}`, identifier: `dry${orderId}`, setupUrl };
+    }
+
     const allocationId = await findAllocationId(port);
     if (!allocationId) {
         throw new Error(`No allocation found for port ${port} on node ${PELICAN_NODE}. Add it in the panel first.`);
     }
-
-    const setupUrl = `${CREDENTIAL_SERVER_URL}:${port}`;
 
     const body = {
         name: `ClanBot-${orderId}`,
@@ -121,7 +134,30 @@ async function createServer({ orderId, customerEmail, port, discordToken, discor
 }
 
 async function deleteServer(pelicanServerId) {
+    if (DRY_RUN) { console.log(`[pelican:DRY_RUN] deleteServer ${pelicanServerId}`); return; }
     await request('DELETE', `/servers/${pelicanServerId}`);
 }
 
-module.exports = { createServer, deleteServer, findAllocationId };
+/* Suspend / unsuspend use the Application API (reuses PELICAN_API_KEY).
+   Suspending halts the bot but preserves all data so it can resume instantly. */
+async function suspendServer(pelicanServerId) {
+    if (DRY_RUN) { console.log(`[pelican:DRY_RUN] suspendServer ${pelicanServerId}`); return; }
+    await request('POST', `/servers/${pelicanServerId}/suspend`);
+}
+
+async function unsuspendServer(pelicanServerId) {
+    if (DRY_RUN) { console.log(`[pelican:DRY_RUN] unsuspendServer ${pelicanServerId}`); return; }
+    await request('POST', `/servers/${pelicanServerId}/unsuspend`);
+}
+
+/* Power signals (start | stop | restart | kill) use the Client API and the
+   server's short identifier (not the numeric id). Requires a Client API key. */
+async function powerSignal(identifier, signal) {
+    const valid = ['start', 'stop', 'restart', 'kill'];
+    if (!valid.includes(signal)) throw new Error(`Invalid power signal: ${signal}`);
+    if (DRY_RUN) { console.log(`[pelican:DRY_RUN] power ${signal} → ${identifier}`); return; }
+    if (!PELICAN_CLIENT_KEY) throw new Error('PELICAN_CLIENT_API_KEY is required for power/restart actions');
+    await request('POST', `/servers/${identifier}/power`, { signal }, { api: 'client', key: PELICAN_CLIENT_KEY });
+}
+
+module.exports = { createServer, deleteServer, suspendServer, unsuspendServer, powerSignal, findAllocationId };
