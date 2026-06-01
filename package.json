@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.7",
     "nodemailer": "^6.9.16",
     "stripe": "^17.7.0"
   }

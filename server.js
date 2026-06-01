@@ -1,5 +1,10 @@
 'use strict';
 
+// Load config from a .env file in the app root if one exists (Plesk / bare Node).
+// override:true makes the file authoritative so it beats a stale value from the
+// host's env-var UI. In Docker there's no .env file, so the container env is used.
+require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
+
 const http   = require('http');
 const https  = require('https');
 const fs     = require('fs');
