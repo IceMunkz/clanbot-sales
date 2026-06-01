@@ -98,6 +98,7 @@ code { font-family: monospace; font-size: 11px; color: #60a5fa; }
   <header>
     <div class="logo">Clan<span>Bot</span> Admin</div>
     <div class="header-right">
+      <button class="btn-sm" id="test-order-btn" style="display:none;background:#7c3aed" onclick="createTestOrder()">🧪 Test Order</button>
       <button class="btn-sm secondary" onclick="loadData()">↻ Refresh</button>
     </div>
   </header>
@@ -185,6 +186,7 @@ async function loadData() {
   if (!res.ok) return;
   const data = await res.json();
 
+  document.getElementById('test-order-btn').style.display = data.test_orders_enabled ? 'inline-block' : 'none';
   document.getElementById('stat-tokens').textContent = data.tokens_available;
 
   const portsAvail = data.ports.find(p => p.status === 'available')?.n || 0;
@@ -244,6 +246,13 @@ function rowActions(o) {
     return `<button class="act-btn green" onclick="lifecycle('resume',${o.id})">Resume</button>`
          + `<button class="act-btn red" onclick="lifecycle('delete',${o.id})">Delete</button>`;
   return '';
+}
+
+async function createTestOrder() {
+  const res = await apiFetch('/admin/test-order', { method: 'POST' });
+  const data = await res.json();
+  if (res.ok) { loadData(); }
+  else { alert('Error: ' + (data.error || 'unknown')); }
 }
 
 async function provision(orderId) {

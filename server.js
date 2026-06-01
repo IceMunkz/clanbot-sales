@@ -154,12 +154,18 @@ async function provisionOrder(orderId, eventId) {
             provisioned_at: new Date().toISOString(),
         });
 
-        await Mailer.sendProvisionedEmail({
-            to: order.customer_email,
-            name: order.customer_name,
-            setupUrl,
-            orderId,
-        });
+        /* The bot is already provisioned at this point — a failed setup email
+           (e.g. SMTP not configured) must NOT roll the order back to failed. */
+        try {
+            await Mailer.sendProvisionedEmail({
+                to: order.customer_email,
+                name: order.customer_name,
+                setupUrl,
+                orderId,
+            });
+        } catch (e) {
+            console.error(`[provision] order ${orderId} provisioned, but setup email failed:`, e.message);
+        }
 
         console.log(`[provision] Order ${orderId} → port ${port}, server ${serverId}`);
     } finally {
@@ -477,7 +483,26 @@ async function handleAdmin(req, res, pathname) {
             tokens_available: DB.tokenPoolCount(),
             ports: portStats,
             orders: DB.listOrders(200),
+            test_orders_enabled: process.env.ALLOW_TEST_ORDERS === 'true',
         });
+    }
+
+    /* POST /admin/test-order — fabricate a dummy awaiting_approval order so the
+       Provision/Suspend/Restart/Delete lifecycle can be tested without Stripe.
+       Off unless ALLOW_TEST_ORDERS=true — keep it disabled in real production. */
+    if (req.method === 'POST' && pathname === '/admin/test-order') {
+        if (process.env.ALLOW_TEST_ORDERS !== 'true') {
+            return json(res, 403, { error: 'Test orders disabled — set ALLOW_TEST_ORDERS=true' });
+        }
+        const r = DB.createOrder({
+            stripeSession: `test_${Date.now()}`,
+            customerEmail: 'test@example.com',
+            customerName: 'Test Customer',
+            plan: 'standard',
+            steamId: '76561198000000000',
+        });
+        DB.updateOrder(r.lastInsertRowid, { status: 'awaiting_approval' });
+        return json(res, 200, { ok: true, orderId: r.lastInsertRowid });
     }
 
     /* POST /admin/tokens — add a bot token */
