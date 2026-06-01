@@ -18,7 +18,8 @@ const PRICE_ID      = process.env.STRIPE_PRICE_ID;        // monthly recurring p
 const SUCCESS_URL   = process.env.SUCCESS_URL || `http://localhost:${PORT}/success`;
 const CANCEL_URL    = process.env.CANCEL_URL  || `http://localhost:${PORT}/`;
 const ADMIN_TOKEN   = (() => {
-    if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
+    // .trim() guards against a stray space/newline pasted into the host's env UI.
+    if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN.trim();
     // Never fall back to random value - require explicit token in production
     throw new Error(
         '[FATAL] ADMIN_TOKEN must be set in .env for production security. ' +
@@ -456,7 +457,7 @@ async function handleAdmin(req, res, pathname) {
         const raw = await readBody(req);
         let body;
         try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
-        if (body.token !== ADMIN_TOKEN) return json(res, 401, { error: 'wrong token' });
+        if (String(body.token || '').trim() !== ADMIN_TOKEN) return json(res, 401, { error: 'wrong token' });
         res.writeHead(200, {
             'Set-Cookie': `admin_session=${ADMIN_TOKEN}; ${cookieFlags}`,
             'Content-Type': 'application/json',
