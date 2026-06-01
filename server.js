@@ -10,7 +10,8 @@ const DB      = require('./db');
 const Pelican = require('./pelican');
 const Mailer  = require('./mailer');
 
-const PORT          = parseInt(process.env.SALES_PORT || '4000', 10);
+// Plesk/Passenger sets PORT; fall back to SALES_PORT (Docker) then 4000.
+const PORT          = parseInt(process.env.PORT || process.env.SALES_PORT || '4000', 10);
 const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WHSEC  = process.env.STRIPE_WEBHOOK_SECRET;
 const PRICE_ID      = process.env.STRIPE_PRICE_ID;        // monthly recurring price
