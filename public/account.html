@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClanBot Account</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0f1316;
+  --surface: #172028;
+  --line: #274252;
+  --text: #eaf3f7;
+  --muted: #9db3bf;
+  --accent: #00a3a3;
+  --good: #2eb67d;
+  --warn: #f2c14e;
+  --bad: #f26464;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--text);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% -20%, rgba(0,163,163,.22), transparent 45%),
+    radial-gradient(circle at 85% 0%, rgba(242,193,78,.2), transparent 35%),
+    var(--bg);
+  padding: 24px;
+}
+.container { max-width: 900px; margin: 0 auto; display: grid; gap: 16px; }
+.card {
+  background: rgba(23,32,40,0.9);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+}
+h1 { margin: 0 0 8px; }
+p { color: var(--muted); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn-primary { background: linear-gradient(135deg, #00a3a3, #007777); color: #eaffff; }
+.btn-secondary { background: #1c2b34; color: var(--text); border: 1px solid var(--line); }
+.badge { display: inline-block; padding: 4px 10px; border-radius: 999px; text-transform: uppercase; font-size: 0.75rem; font-weight: 600; }
+.status-active { background: rgba(46,182,125,.2); color: #aff2d4; }
+.status-awaiting_approval, .status-pending, .status-provisioning { background: rgba(242,193,78,.2); color: #ffecb8; }
+.status-suspended, .status-deleted { background: rgba(155,178,191,.2); color: #d3e2ea; }
+.status-past_due, .status-failed { background: rgba(242,100,100,.2); color: #ffc1c1; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.kv { background: #12202a; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.kv small { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.kv strong { display: block; margin-top: 6px; font-size: 1rem; word-break: break-word; }
+.mono { font-family: "IBM Plex Mono", monospace; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #213745; font-size: .9rem; }
+th { color: var(--muted); text-transform: uppercase; font-size: .72rem; letter-spacing: .05em; }
+.hidden { display: none !important; }
+.error { color: #ffb3b3; }
+a { color: #90ecec; }
+</style>
+</head>
+<body>
+<main class="container">
+  <section class="card">
+    <h1>Your ClanBot Account</h1>
+    <p>Manage your subscription, verify current bot access, and open Stripe billing from one place.</p>
+    <div class="actions">
+      <button class="btn-primary" id="steam-btn" onclick="location.href='/auth/steam'">Sign in with Steam</button>
+      <button class="btn-secondary hidden" id="portal-btn" onclick="openPortal()">Manage Billing in Stripe</button>
+      <button class="btn-secondary" onclick="loadAccount()">Refresh</button>
+    </div>
+    <p id="status-msg" class="hidden"></p>
+  </section>
+
+  <section class="card hidden" id="account-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Subscription Overview</h2>
+      <div id="order-status"></div>
+    </div>
+    <div class="grid" style="margin-top:12px;">
+      <div class="kv"><small>Email</small><strong id="v-email">-</strong></div>
+      <div class="kv"><small>Steam ID</small><strong class="mono" id="v-steam">-</strong></div>
+      <div class="kv"><small>Subscription ID</small><strong class="mono" id="v-sub">-</strong></div>
+      <div class="kv"><small>Subscription Status</small><strong id="v-sub-status">-</strong></div>
+      <div class="kv"><small>Current Period Ends</small><strong id="v-period-end">-</strong></div>
+      <div class="kv"><small>Setup Link</small><strong id="v-setup">-</strong></div>
+    </div>
+  </section>
+
+  <section class="card hidden" id="history-card">
+    <h2 style="margin-top:0;">Order History</h2>
+    <table>
+      <thead><tr><th>Order</th><th>Status</th><th>Subscription</th><th>Created</th></tr></thead>
+      <tbody id="history-body"><tr><td colspan="4">No history available.</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+let steamId = null;
+let account = null;
+
+function safe(v) {
+  return String(v ?? '').replace(/[&<>'\"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'": '&#39;' }[c]));
+}
+
+function fmtDate(v) {
+  if (!v) return '-';
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+}
+
+function badge(status) {
+  const s = String(status || 'unknown');
+  return `<span class="badge status-${s}">${s.replace(/_/g, ' ')}</span>`;
+}
+
+function showMessage(text, isError = false) {
+  const el = document.getElementById('status-msg');
+  el.textContent = text;
+  el.classList.remove('hidden');
+  el.classList.toggle('error', !!isError);
+}
+
+async function checkSteam() {
+  try {
+    const res = await fetch('/api/steam/me');
+    const data = await res.json();
+    steamId = data.steamId || null;
+  } catch {
+    steamId = null;
+  }
+
+  const steamBtn = document.getElementById('steam-btn');
+  if (steamId) {
+    steamBtn.textContent = 'Signed in with Steam';
+    steamBtn.disabled = true;
+    steamBtn.style.opacity = '0.65';
+  }
+}
+
+async function loadAccount() {
+  await checkSteam();
+  if (!steamId) {
+    showMessage('Sign in with Steam to load your subscription.', false);
+    return;
+  }
+
+  const res = await fetch('/api/account');
+  const data = await res.json();
+
+  if (!res.ok) {
+    showMessage(data.error || 'Unable to load account.', true);
+    return;
+  }
+
+  account = data.account;
+  document.getElementById('account-card').classList.remove('hidden');
+  document.getElementById('history-card').classList.remove('hidden');
+  document.getElementById('portal-btn').classList.remove('hidden');
+  document.getElementById('status-msg').classList.add('hidden');
+
+  document.getElementById('order-status').innerHTML = badge(account.status);
+  document.getElementById('v-email').textContent = account.customerEmail || '-';
+  document.getElementById('v-steam').textContent = account.steamId || '-';
+  document.getElementById('v-sub').textContent = account.subscription?.id || '-';
+  document.getElementById('v-sub-status').textContent = account.subscription?.status || '-';
+  document.getElementById('v-period-end').textContent = fmtDate(account.subscription?.currentPeriodEnd);
+
+  const setup = document.getElementById('v-setup');
+  if (account.setupUrl) setup.innerHTML = `<a href="${safe(account.setupUrl)}/setup" target="_blank">Open setup wizard</a>`;
+  else setup.textContent = 'Not provisioned yet';
+
+  const rows = account.history || [];
+  const body = document.getElementById('history-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="4">No history available.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>#${r.orderId}</td>
+      <td>${badge(r.status)}</td>
+      <td>${safe(r.subscriptionStatus || '-')}</td>
+      <td>${fmtDate(r.createdAt)}</td>
+    </tr>
+  `).join('');
+}
+
+async function openPortal() {
+  const res = await fetch('/api/portal', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) return showMessage(data.error || 'Unable to open billing portal.', true);
+  if (data.url) location.href = data.url;
+}
+
+(function init() {
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('steam') === 'ok') showMessage('Steam sign-in complete. Loading your account...', false);
+  if (qs.get('steam') === 'error') showMessage('Steam sign-in failed. Please try again.', true);
+  if (qs.has('steam')) history.replaceState({}, '', location.pathname);
+  loadAccount();
+})();
+</script>
+</body>
+</html>

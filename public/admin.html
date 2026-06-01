@@ -3,275 +3,506 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ClanBot Admin</title>
+<title>ClanBot Control - Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-:root { --bg: #0d0f1a; --card: #16213e; --border: #1e2d50; --blue: #3b82f6; --text: #f1f5f9; --muted: #64748b; --subtle: #94a3b8; --green: #22c55e; --red: #ef4444; --orange: #fb923c; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+:root {
+  --bg: #0f1316;
+  --surface: #141c22;
+  --surface-2: #1a252e;
+  --line: #243746;
+  --text: #eaf3f7;
+  --muted: #9bb2bf;
+  --accent: #00a3a3;
+  --accent-2: #ff8f3f;
+  --good: #2eb67d;
+  --warn: #f2c14e;
+  --bad: #f26464;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% -20%, rgba(0, 163, 163, 0.20), transparent 45%),
+    radial-gradient(circle at 95% 10%, rgba(242, 193, 78, 0.16), transparent 35%),
+    var(--bg);
+  color: var(--text);
+  font-family: "Space Grotesk", sans-serif;
+  min-height: 100vh;
+}
+button, input, select { font: inherit; }
+.mono { font-family: "IBM Plex Mono", monospace; }
+.hidden { display: none !important; }
 
-/* Login */
-#login-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-.login-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: 100%; max-width: 380px; }
-.login-card h1 { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
-.login-card p { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
-.field { margin-bottom: 16px; }
-.field label { display: block; font-size: 13px; font-weight: 600; color: var(--subtle); margin-bottom: 6px; }
-.field input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; font-size: 14px; color: var(--text); outline: none; }
-.field input:focus { border-color: var(--blue); }
-.btn { width: 100%; background: var(--blue); color: #fff; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; cursor: pointer; }
-.btn:hover { background: #2563eb; }
-#login-err { color: #f87171; font-size: 13px; margin-top: 10px; display: none; }
+#login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: rgba(20, 28, 34, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 28px;
+}
+.login-card h1 { margin: 0 0 8px; font-size: 1.4rem; }
+.login-card p { margin: 0 0 18px; color: var(--muted); }
+.field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.field label { color: var(--muted); font-size: 0.9rem; }
+.field input, .field select {
+  width: 100%;
+  background: #0d1216;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 12px;
+}
+.btn {
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn-primary {
+  background: linear-gradient(135deg, #00a3a3, #007777);
+  color: #eaffff;
+}
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.btn-danger { background: #8a2d2d; color: #fff; }
+.error { color: #ffabab; margin-top: 10px; font-size: 0.9rem; }
 
-/* Dashboard */
-#dashboard { display: none; }
-header { background: rgba(13,15,26,.9); border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; backdrop-filter: blur(8px); }
-.logo { font-size: 18px; font-weight: 800; }
-.logo span { color: var(--blue); }
-.header-right { display: flex; gap: 12px; align-items: center; }
-.btn-sm { background: var(--blue); color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.btn-sm.secondary { background: transparent; border: 1px solid var(--border); color: var(--subtle); }
-.btn-sm:hover { opacity: .85; }
+#app { display: none; }
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(10px);
+  background: rgba(11, 16, 20, 0.78);
+  border-bottom: 1px solid var(--line);
+}
+.header-inner {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 14px 18px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand { font-weight: 700; letter-spacing: 0.02em; }
+.brand span { color: var(--accent); }
+.header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
-main { max-width: 1200px; margin: 0 auto; padding: 32px 20px; }
-
-/* Stats row */
-.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 32px; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
-.stat-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
-.stat-val { font-size: 32px; font-weight: 900; }
-.stat-val.green { color: var(--green); }
-.stat-val.orange { color: var(--orange); }
-.stat-val.red { color: var(--red); }
-
-/* Add token */
-.panel { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin-bottom: 28px; }
-.panel h2 { font-size: 16px; font-weight: 700; margin-bottom: 18px; }
-.token-form { display: flex; gap: 10px; flex-wrap: wrap; }
-.token-form input { flex: 1; min-width: 200px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 13px; font-size: 13px; color: var(--text); outline: none; font-family: monospace; }
-.token-form input:focus { border-color: var(--blue); }
-#token-msg { font-size: 13px; margin-top: 10px; }
-
-/* Orders table */
+.container {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+}
+.stat small { color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.stat strong { display: block; font-size: 1.6rem; margin-top: 6px; }
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+}
+.panel h2 { margin: 0 0 12px; font-size: 1rem; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row > * { flex: 1; min-width: 180px; }
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
-td { padding: 12px 12px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--subtle); vertical-align: middle; }
-tr:last-child td { border-bottom: none; }
-.badge { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 700; }
-.badge.active { background: rgba(34,197,94,.15); color: var(--green); }
-.badge.pending { background: rgba(251,146,60,.15); color: var(--orange); }
-.badge.provisioning { background: rgba(59,130,246,.15); color: #60a5fa; }
-.badge.failed { background: rgba(239,68,68,.15); color: var(--red); }
-.badge.awaiting_approval { background: rgba(251,146,60,.15); color: var(--orange); }
-.badge.suspended { background: rgba(148,163,184,.15); color: var(--subtle); }
-.badge.past_due { background: rgba(239,68,68,.15); color: var(--red); }
-.badge.deleted { background: rgba(100,116,139,.15); color: var(--muted); }
-.provision-btn { background: var(--blue); color: #fff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.provision-btn:hover { background: #2563eb; }
-.act-btn { border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 600; cursor: pointer; margin-right: 4px; color: #fff; }
-.act-btn.green { background: #16a34a; }
-.act-btn.blue { background: var(--blue); }
-.act-btn.orange { background: #d97706; }
-.act-btn.red { background: var(--red); }
-.act-btn:hover { opacity: .85; }
-code { font-family: monospace; font-size: 11px; color: #60a5fa; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #20303c; font-size: 0.88rem; }
+th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.badge { display: inline-block; border-radius: 999px; padding: 3px 9px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+.status-active { background: rgba(46,182,125,0.18); color: #a6f1d0; }
+.status-awaiting_approval, .status-pending, .status-provisioning { background: rgba(242,193,78,0.18); color: #fde6a6; }
+.status-past_due, .status-failed { background: rgba(242,100,100,0.18); color: #ffb3b3; }
+.status-suspended, .status-deleted { background: rgba(155,178,191,0.2); color: #d3e2ea; }
+.actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.actions .btn { padding: 6px 9px; font-size: 0.76rem; }
+.link { color: #8de8e8; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+.grid-2 { display: grid; gap: 12px; grid-template-columns: 2fr 1fr; }
+@media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-
-<!-- Login -->
-<div id="login-screen">
+<section id="login">
   <div class="login-card">
-    <h1>Admin Panel</h1>
-    <p>Enter your admin token to continue.</p>
+    <h1>ClanBot Admin</h1>
+    <p>Sign in with your admin token.</p>
     <div class="field">
-      <label>Admin Token</label>
-      <input type="password" id="token-input" placeholder="••••••••••••••••" onkeydown="if(event.key==='Enter')login()">
+      <label for="admin-token">Admin token</label>
+      <input id="admin-token" type="password" placeholder="Paste ADMIN_TOKEN" />
     </div>
-    <button class="btn" onclick="login()">Sign In</button>
-    <div id="login-err"></div>
+    <button class="btn btn-primary" onclick="login()">Sign in</button>
+    <div id="login-error" class="error hidden"></div>
   </div>
-</div>
+</section>
 
-<!-- Dashboard -->
-<div id="dashboard">
+<section id="app">
   <header>
-    <div class="logo">Clan<span>Bot</span> Admin</div>
-    <div class="header-right">
-      <button class="btn-sm" id="test-order-btn" style="display:none;background:#7c3aed" onclick="createTestOrder()">🧪 Test Order</button>
-      <button class="btn-sm secondary" onclick="loadData()">↻ Refresh</button>
+    <div class="header-inner">
+      <div class="brand">Clan<span>Bot</span> Control</div>
+      <div class="header-actions">
+        <button class="btn btn-secondary" id="test-order-btn" style="display:none" onclick="createTestOrder()">Create Test Order</button>
+        <button class="btn btn-secondary" onclick="refreshAll()">Refresh</button>
+        <button class="btn btn-danger" onclick="logout()">Log out</button>
+      </div>
     </div>
   </header>
-  <main>
 
-    <!-- Stats -->
-    <div class="stats-row">
-      <div class="stat-card"><div class="stat-label">Tokens Available</div><div class="stat-val green" id="stat-tokens">—</div></div>
-      <div class="stat-card"><div class="stat-label">Ports Available</div><div class="stat-val green" id="stat-ports">—</div></div>
-      <div class="stat-card"><div class="stat-label">Active Bots</div><div class="stat-val" id="stat-active">—</div></div>
-      <div class="stat-card"><div class="stat-label">Failed Orders</div><div class="stat-val red" id="stat-failed">—</div></div>
+  <main class="container">
+    <div class="stats">
+      <div class="stat"><small>Tokens available</small><strong id="s-tokens">-</strong></div>
+      <div class="stat"><small>Ports available</small><strong id="s-ports">-</strong></div>
+      <div class="stat"><small>Active subscriptions</small><strong id="s-active">-</strong></div>
+      <div class="stat"><small>Awaiting approval</small><strong id="s-awaiting">-</strong></div>
+      <div class="stat"><small>Past due / failed</small><strong id="s-risk">-</strong></div>
     </div>
 
-    <!-- Add token -->
     <div class="panel">
-      <h2>🔑 Add Bot Token to Pool</h2>
-      <div class="token-form">
-        <input type="text" id="t-client-id" placeholder="Client ID (e.g. 1234567890123456789)">
-        <input type="text" id="t-bot-token" placeholder="Bot token (e.g. MTIz...)">
-        <button class="btn-sm" onclick="addToken()">Add Token</button>
+      <h2>Token Pool</h2>
+      <div class="row">
+        <input id="token-client-id" class="mono" placeholder="Discord client ID" />
+        <input id="token-bot-token" class="mono" placeholder="Discord bot token" />
+        <button class="btn btn-primary" onclick="addToken()">Add token</button>
       </div>
-      <div id="token-msg"></div>
+      <div id="token-msg" class="error hidden"></div>
     </div>
 
-    <!-- Orders -->
+    <div class="grid-2">
+      <div class="panel">
+        <h2>Subscriptions / Orders</h2>
+        <div class="row" style="margin-bottom:10px;">
+          <input id="order-search" placeholder="Search by email, name, Steam ID, subscription" />
+          <select id="order-status">
+            <option value="">All statuses</option>
+            <option value="awaiting_approval">Awaiting approval</option>
+            <option value="active">Active</option>
+            <option value="suspended">Suspended</option>
+            <option value="past_due">Past due</option>
+            <option value="failed">Failed</option>
+            <option value="deleted">Deleted</option>
+          </select>
+          <button class="btn btn-secondary" onclick="loadOrders()">Apply filters</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th><th>User</th><th>Status</th><th>Subscription</th><th>Setup</th><th>Created</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="orders-body"><tr><td colspan="7">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>User Manager</h2>
+        <div class="row" style="margin-bottom:10px;">
+          <input id="user-search" placeholder="Search users" />
+          <button class="btn btn-secondary" onclick="loadUsers()">Find</button>
+        </div>
+        <div class="table-wrap" style="max-height:480px; overflow:auto;">
+          <table>
+            <thead><tr><th>User</th><th>Current</th><th>Orders</th></tr></thead>
+            <tbody id="users-body"><tr><td colspan="3">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
-      <h2>📋 Orders</h2>
+      <h2 id="user-orders-title">Selected user orders</h2>
       <div class="table-wrap">
         <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Email</th>
-              <th>Steam</th>
-              <th>Status</th>
-              <th>Port</th>
-              <th>Setup URL</th>
-              <th>Pelican ID</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="orders-tbody">
-            <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">Loading…</td></tr>
-          </tbody>
+          <thead><tr><th>Order</th><th>Status</th><th>Subscription</th><th>Server</th><th>Created</th></tr></thead>
+          <tbody id="user-orders-body"><tr><td colspan="5">Select a user to inspect history.</td></tr></tbody>
         </table>
       </div>
     </div>
-
   </main>
-</div>
+</section>
 
 <script>
 let adminToken = '';
 
+function getStoredToken() {
+  return sessionStorage.getItem('clanbot_admin_token') || '';
+}
+
+function saveToken(token) {
+  sessionStorage.setItem('clanbot_admin_token', token);
+}
+
 async function apiFetch(path, opts = {}) {
-  return fetch(path, {
-    ...opts,
-    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
-  });
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${adminToken}`,
+    ...(opts.headers || {}),
+  };
+  return fetch(path, { ...opts, headers });
+}
+
+function badge(status) {
+  const s = String(status || 'unknown');
+  return `<span class="badge status-${s}">${s.replace(/_/g, ' ')}</span>`;
+}
+
+function fmtDate(v) {
+  if (!v) return '-';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v).slice(0, 16).replace('T', ' ');
+  return d.toLocaleString();
+}
+
+function safe(v) {
+  return String(v ?? '').replace(/[&<>'\"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'": '&#39;' }[c]));
 }
 
 async function login() {
-  const t = document.getElementById('token-input').value.trim();
-  const err = document.getElementById('login-err');
-  err.style.display = 'none';
+  const tokenInput = document.getElementById('admin-token');
+  const token = tokenInput.value.trim();
+  const err = document.getElementById('login-error');
+  err.classList.add('hidden');
+
   const res = await fetch('/admin/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: t }),
+    body: JSON.stringify({ token }),
   });
-  if (res.ok) {
-    adminToken = t;
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-    loadData();
-  } else {
+
+  if (!res.ok) {
     err.textContent = 'Invalid token.';
-    err.style.display = 'block';
-  }
-}
-
-async function loadData() {
-  const res = await apiFetch('/admin/stats');
-  if (!res.ok) return;
-  const data = await res.json();
-
-  document.getElementById('test-order-btn').style.display = data.test_orders_enabled ? 'inline-block' : 'none';
-  document.getElementById('stat-tokens').textContent = data.tokens_available;
-
-  const portsAvail = data.ports.find(p => p.status === 'available')?.n || 0;
-  document.getElementById('stat-ports').textContent = portsAvail;
-  document.getElementById('stat-active').textContent = data.orders.filter(o => o.status === 'active').length;
-  document.getElementById('stat-failed').textContent = data.orders.filter(o => o.status === 'failed').length;
-
-  const tbody = document.getElementById('orders-tbody');
-  if (!data.orders.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">No orders yet.</td></tr>';
+    err.classList.remove('hidden');
     return;
   }
 
-  tbody.innerHTML = data.orders.map(o => `
-    <tr>
-      <td style="color:var(--text);font-weight:600;">#${o.id}</td>
-      <td>${o.customer_email}</td>
-      <td>${o.steam_id ? `<code>${o.steam_id}</code>` : '—'}</td>
-      <td><span class="badge ${o.status}">${(o.status || '').replace(/_/g,' ')}</span></td>
-      <td>${o.pelican_port || '—'}</td>
-      <td>${o.setup_url ? `<a href="${o.setup_url}/setup" target="_blank" style="color:#60a5fa;">${o.setup_url}</a>` : '—'}</td>
-      <td>${o.pelican_server_id || '—'}</td>
-      <td style="font-size:12px;">${o.created_at?.slice(0,16).replace('T',' ') || '—'}</td>
-      <td style="white-space:nowrap;">${rowActions(o)}</td>
-    </tr>
-  `).join('');
+  adminToken = token;
+  saveToken(token);
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  await refreshAll();
+}
+
+async function logout() {
+  try { await apiFetch('/admin/logout', { method: 'POST' }); } catch {}
+  sessionStorage.removeItem('clanbot_admin_token');
+  location.reload();
+}
+
+async function refreshAll() {
+  await Promise.all([loadOrders(), loadUsers()]);
+}
+
+async function loadOrders() {
+  const search = document.getElementById('order-search').value.trim();
+  const status = document.getElementById('order-status').value;
+  const q = new URLSearchParams({ limit: '400' });
+  if (search) q.set('search', search);
+  if (status) q.set('status', status);
+
+  const res = await apiFetch('/admin/stats?' + q.toString());
+  if (!res.ok) {
+    if (res.status === 401) return logout();
+    return;
+  }
+
+  const data = await res.json();
+  document.getElementById('test-order-btn').style.display = data.test_orders_enabled ? 'inline-block' : 'none';
+
+  const portsAvail = (data.ports || []).find(p => p.status === 'available')?.n || 0;
+  const statusCounts = Object.fromEntries((data.order_counts || []).map(x => [x.status, x.n]));
+
+  document.getElementById('s-tokens').textContent = data.tokens_available ?? '-';
+  document.getElementById('s-ports').textContent = portsAvail;
+  document.getElementById('s-active').textContent = statusCounts.active || 0;
+  document.getElementById('s-awaiting').textContent = statusCounts.awaiting_approval || 0;
+  document.getElementById('s-risk').textContent = (statusCounts.past_due || 0) + (statusCounts.failed || 0);
+
+  const body = document.getElementById('orders-body');
+  const rows = data.orders || [];
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7">No orders found.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map(o => {
+    const subStatus = safe(o.subscription_status || '-');
+    const user = `<div>${safe(o.customer_email)}</div><div class="mono" style="color:var(--muted);font-size:12px;">${safe(o.steam_id || '-')}</div>`;
+    const sub = `<div class="mono">${safe(o.stripe_subscription || '-')}</div><div style="color:var(--muted);font-size:12px;">${subStatus}</div>`;
+    const setup = o.setup_url ? `<a class="link" target="_blank" href="${safe(o.setup_url)}/setup">Open setup</a>` : '-';
+    return `<tr>
+      <td>#${o.id}</td>
+      <td>${user}</td>
+      <td>${badge(o.status)}</td>
+      <td>${sub}</td>
+      <td>${setup}</td>
+      <td>${fmtDate(o.created_at)}</td>
+      <td><div class="actions">${orderActions(o)}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function orderActions(order) {
+  const o = Number(order.id);
+  const s = order.status;
+  if (s === 'awaiting_approval' || s === 'pending' || s === 'failed') {
+    return `<button class="btn btn-primary" onclick="provision(${o})">Provision</button>`;
+  }
+  if (s === 'active') {
+    return `
+      <button class="btn btn-secondary" onclick="lifecycle('restart', ${o})">Restart</button>
+      <button class="btn btn-secondary" onclick="lifecycle('suspend', ${o})">Suspend</button>
+      <button class="btn btn-danger" onclick="lifecycle('delete', ${o})">Delete</button>
+    `;
+  }
+  if (s === 'suspended' || s === 'past_due') {
+    return `
+      <button class="btn btn-primary" onclick="lifecycle('resume', ${o})">Resume</button>
+      <button class="btn btn-danger" onclick="lifecycle('delete', ${o})">Delete</button>
+    `;
+  }
+  return '-';
 }
 
 async function addToken() {
-  const clientId = document.getElementById('t-client-id').value.trim();
-  const botToken = document.getElementById('t-bot-token').value.trim();
+  const clientId = document.getElementById('token-client-id').value.trim();
+  const botToken = document.getElementById('token-bot-token').value.trim();
   const msg = document.getElementById('token-msg');
-  if (!clientId || !botToken) { msg.style.color = '#f87171'; msg.textContent = 'Both fields required.'; return; }
-  const res = await apiFetch('/admin/tokens', { method: 'POST', body: JSON.stringify({ client_id: clientId, bot_token: botToken }) });
-  const data = await res.json();
-  if (res.ok) {
-    msg.style.color = '#22c55e';
-    msg.textContent = `✓ Token added. Pool size: ${data.pool_size}`;
-    document.getElementById('t-client-id').value = '';
-    document.getElementById('t-bot-token').value = '';
-    loadData();
-  } else {
-    msg.style.color = '#f87171';
-    msg.textContent = data.error || 'Error adding token.';
-  }
-}
+  msg.classList.add('hidden');
 
-function rowActions(o) {
-  const s = o.status;
-  if (s === 'awaiting_approval' || s === 'pending' || s === 'failed')
-    return `<button class="act-btn green" onclick="provision(${o.id})">Provision</button>`;
-  if (s === 'active')
-    return `<button class="act-btn blue" onclick="lifecycle('restart',${o.id})">Restart</button>`
-         + `<button class="act-btn orange" onclick="lifecycle('suspend',${o.id})">Suspend</button>`
-         + `<button class="act-btn red" onclick="lifecycle('delete',${o.id})">Delete</button>`;
-  if (s === 'suspended' || s === 'past_due')
-    return `<button class="act-btn green" onclick="lifecycle('resume',${o.id})">Resume</button>`
-         + `<button class="act-btn red" onclick="lifecycle('delete',${o.id})">Delete</button>`;
-  return '';
+  if (!clientId || !botToken) {
+    msg.textContent = 'Client ID and bot token are required.';
+    msg.classList.remove('hidden');
+    return;
+  }
+
+  const res = await apiFetch('/admin/tokens', {
+    method: 'POST',
+    body: JSON.stringify({ client_id: clientId, bot_token: botToken }),
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    msg.textContent = data.error || 'Unable to add token.';
+    msg.classList.remove('hidden');
+    return;
+  }
+
+  document.getElementById('token-client-id').value = '';
+  document.getElementById('token-bot-token').value = '';
+  await refreshAll();
 }
 
 async function createTestOrder() {
   const res = await apiFetch('/admin/test-order', { method: 'POST' });
   const data = await res.json();
-  if (res.ok) { loadData(); }
-  else { alert('Error: ' + (data.error || 'unknown')); }
+  if (!res.ok) return alert(data.error || 'Failed to create test order');
+  await loadOrders();
 }
 
 async function provision(orderId) {
-  if (!confirm(`Provision order #${orderId}? This creates the customer's bot server.`)) return;
+  if (!confirm(`Provision order #${orderId}?`)) return;
   const res = await apiFetch(`/admin/provision/${orderId}`, { method: 'POST' });
   const data = await res.json();
-  if (res.ok) { alert('Provisioned!'); loadData(); }
-  else { alert('Error: ' + (data.error || 'unknown')); }
+  if (!res.ok) return alert(data.error || 'Provision failed');
+  await loadOrders();
 }
 
 async function lifecycle(verb, orderId) {
-  const labels = { suspend: 'Suspend (pause)', resume: 'Resume', restart: 'Restart', delete: 'DELETE — frees the port + bot token' };
-  if (!confirm(`${labels[verb] || verb} order #${orderId}?`)) return;
+  if (!confirm(`${verb} order #${orderId}?`)) return;
   const res = await apiFetch(`/admin/${verb}/${orderId}`, { method: 'POST' });
   const data = await res.json();
-  if (res.ok) { loadData(); }
-  else { alert('Error: ' + (data.error || 'unknown')); }
+  if (!res.ok) return alert(data.error || `${verb} failed`);
+  await loadOrders();
 }
-</script>
 
+async function loadUsers() {
+  const search = document.getElementById('user-search').value.trim();
+  const q = new URLSearchParams({ limit: '300' });
+  if (search) q.set('search', search);
+  const res = await apiFetch('/admin/users?' + q.toString());
+  if (!res.ok) return;
+  const data = await res.json();
+  const users = data.users || [];
+  const body = document.getElementById('users-body');
+  if (!users.length) {
+    body.innerHTML = '<tr><td colspan="3">No users found.</td></tr>';
+    return;
+  }
+  body.innerHTML = users.map(u => {
+    const key = u.steam_id ? `steam:${u.steam_id}` : `email:${u.customer_email}`;
+    return `<tr onclick="loadUserOrders('${safe(key)}')" style="cursor:pointer;">
+      <td><div>${safe(u.customer_email)}</div><div class="mono" style="color:var(--muted);font-size:12px;">${safe(u.steam_id || '-')}</div></td>
+      <td>${badge(u.status)}</td>
+      <td>${u.order_count || 0}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadUserOrders(key) {
+  const [kind, value] = key.split(':');
+  const q = new URLSearchParams({ limit: '50' });
+  if (kind === 'steam') q.set('steam_id', value);
+  else q.set('email', value);
+  const title = document.getElementById('user-orders-title');
+  title.textContent = `Selected user orders (${value})`;
+
+  const res = await apiFetch('/admin/user-orders?' + q.toString());
+  if (!res.ok) return;
+  const data = await res.json();
+  const rows = data.orders || [];
+  const body = document.getElementById('user-orders-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="5">No orders found for this user.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(o => `
+    <tr>
+      <td>#${o.id}</td>
+      <td>${badge(o.status)}</td>
+      <td><div class="mono">${safe(o.stripe_subscription || '-')}</div><div style="color:var(--muted);font-size:12px;">${safe(o.subscription_status || '-')}</div></td>
+      <td>${safe(o.pelican_server_id || '-')}</td>
+      <td>${fmtDate(o.created_at)}</td>
+    </tr>
+  `).join('');
+}
+
+(function init() {
+  const saved = getStoredToken();
+  if (!saved) return;
+  adminToken = saved;
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  refreshAll();
+})();
+</script>
 </body>
 </html>

@@ -37,6 +37,12 @@ db.exec(`
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     stripe_session  TEXT UNIQUE,
     stripe_payment  TEXT,
+    stripe_customer TEXT,
+    stripe_subscription TEXT,
+    subscription_status TEXT,
+    subscription_current_period_end TEXT,
+    subscription_cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+    subscription_canceled_at TEXT,
     customer_email  TEXT NOT NULL,
     customer_name   TEXT,
     plan            TEXT NOT NULL DEFAULT 'standard',
@@ -78,9 +84,21 @@ for (const [col, ddl] of [
     ['steam_id',            'ALTER TABLE orders ADD COLUMN steam_id TEXT'],
     ['stripe_subscription', 'ALTER TABLE orders ADD COLUMN stripe_subscription TEXT'],
     ['pelican_identifier',  'ALTER TABLE orders ADD COLUMN pelican_identifier TEXT'],
+    ['stripe_customer',     'ALTER TABLE orders ADD COLUMN stripe_customer TEXT'],
+    ['subscription_status', 'ALTER TABLE orders ADD COLUMN subscription_status TEXT'],
+    ['subscription_current_period_end', 'ALTER TABLE orders ADD COLUMN subscription_current_period_end TEXT'],
+    ['subscription_cancel_at_period_end', 'ALTER TABLE orders ADD COLUMN subscription_cancel_at_period_end INTEGER NOT NULL DEFAULT 0'],
+    ['subscription_canceled_at', 'ALTER TABLE orders ADD COLUMN subscription_canceled_at TEXT'],
 ]) {
     if (!hasColumn('orders', col)) db.exec(ddl);
 }
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_orders_steam_id ON orders(steam_id);
+  CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+  CREATE INDEX IF NOT EXISTS idx_orders_stripe_customer ON orders(stripe_customer);
+  CREATE INDEX IF NOT EXISTS idx_orders_subscription ON orders(stripe_subscription);
+`);
 
 module.exports = {
     /* Token pool */
@@ -150,12 +168,127 @@ module.exports = {
         const vals = [...Object.values(fields), id];
         db.prepare(`UPDATE orders SET ${sets} WHERE id = ?`).run(...vals);
     },
-    listOrders(limit = 100) {
+    listOrders(options = {}) {
+        const input = typeof options === 'number' ? { limit: options } : options;
+        const limit = Number(input.limit || 100);
+        const status = input.status ? String(input.status).trim() : '';
+        const search = input.search ? String(input.search).trim() : '';
+        const params = [];
+        let where = '1=1';
+
+        if (status) {
+            where += ' AND o.status = ?';
+            params.push(status);
+        }
+        if (search) {
+            where += ` AND (
+                o.customer_email LIKE ?
+                OR IFNULL(o.customer_name, '') LIKE ?
+                OR IFNULL(o.steam_id, '') LIKE ?
+                OR CAST(o.id AS TEXT) LIKE ?
+                OR IFNULL(o.stripe_subscription, '') LIKE ?
+            )`;
+            const q = `%${search}%`;
+            params.push(q, q, q, q, q);
+        }
+
+        params.push(limit);
         return db.prepare(
             `SELECT o.*, t.client_id FROM orders o
              LEFT JOIN token_pool t ON t.id = o.discord_token_id
-             ORDER BY o.created_at DESC LIMIT ?`
-        ).all(limit);
+             WHERE ${where}
+             ORDER BY o.created_at DESC, o.id DESC
+             LIMIT ?`
+        ).all(...params);
+    },
+    listUsers(options = {}) {
+        const limit = Number(options.limit || 200);
+        const search = options.search ? String(options.search).trim() : '';
+        const params = [];
+        let where = '';
+        if (search) {
+            where = `
+              WHERE (
+                IFNULL(o.customer_email, '') LIKE ?
+                OR IFNULL(o.customer_name, '') LIKE ?
+                OR IFNULL(o.steam_id, '') LIKE ?
+              )`;
+            const q = `%${search}%`;
+            params.push(q, q, q);
+        }
+        params.push(limit);
+        return db.prepare(
+            `SELECT
+                o.id AS latest_order_id,
+                o.customer_email,
+                o.customer_name,
+                o.steam_id,
+                o.status,
+                o.stripe_subscription,
+                o.subscription_status,
+                o.subscription_current_period_end,
+                o.subscription_cancel_at_period_end,
+                o.subscription_canceled_at,
+                o.setup_url,
+                o.pelican_server_id,
+                o.pelican_identifier,
+                o.pelican_port,
+                o.created_at AS last_order_at,
+                grouped.order_count
+             FROM orders o
+             JOIN (
+                SELECT
+                    MAX(id) AS latest_order_id,
+                    COUNT(*) AS order_count,
+                    COALESCE(NULLIF(steam_id, ''), LOWER(customer_email)) AS user_key
+                FROM orders
+                GROUP BY COALESCE(NULLIF(steam_id, ''), LOWER(customer_email))
+             ) grouped ON grouped.latest_order_id = o.id
+             ${where}
+             ORDER BY o.created_at DESC, o.id DESC
+             LIMIT ?`
+        ).all(...params);
+    },
+    getOrdersForUser({ steamId, email, limit = 25 }) {
+        const lim = Number(limit || 25);
+        if (steamId) {
+            return db.prepare(
+                `SELECT o.*, t.client_id
+                 FROM orders o
+                 LEFT JOIN token_pool t ON t.id = o.discord_token_id
+                 WHERE o.steam_id = ?
+                 ORDER BY o.created_at DESC, o.id DESC
+                 LIMIT ?`
+            ).all(String(steamId), lim);
+        }
+        return db.prepare(
+            `SELECT o.*, t.client_id
+             FROM orders o
+             LEFT JOIN token_pool t ON t.id = o.discord_token_id
+             WHERE LOWER(o.customer_email) = LOWER(?)
+             ORDER BY o.created_at DESC, o.id DESC
+             LIMIT ?`
+        ).all(String(email || ''), lim);
+    },
+    getLatestOrderForSteam(steamId) {
+        return db.prepare(
+            'SELECT * FROM orders WHERE steam_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+        ).get(String(steamId));
+    },
+    getLatestOrderForEmail(email) {
+        return db.prepare(
+            'SELECT * FROM orders WHERE LOWER(customer_email) = LOWER(?) ORDER BY created_at DESC, id DESC LIMIT 1'
+        ).get(String(email));
+    },
+    getOrderByStripeCustomer(customerId) {
+        return db.prepare(
+            'SELECT * FROM orders WHERE stripe_customer = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+        ).get(customerId);
+    },
+    orderCounts() {
+        return db.prepare(
+            'SELECT status, COUNT(*) AS n FROM orders GROUP BY status'
+        ).all();
     },
 
     /* Config */

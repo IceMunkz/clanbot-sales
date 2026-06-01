@@ -22,6 +22,7 @@ const STRIPE_WHSEC  = process.env.STRIPE_WEBHOOK_SECRET;
 const PRICE_ID      = process.env.STRIPE_PRICE_ID;        // monthly recurring price
 const SUCCESS_URL   = process.env.SUCCESS_URL || `http://localhost:${PORT}/success`;
 const CANCEL_URL    = process.env.CANCEL_URL  || `http://localhost:${PORT}/`;
+const BILLING_PORTAL_RETURN_URL = process.env.BILLING_PORTAL_RETURN_URL || `${process.env.SALES_URL || `http://localhost:${PORT}`}/account`;
 const ADMIN_TOKEN   = (() => {
     // .trim() guards against a stray space/newline pasted into the host's env UI.
     if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN.trim();
@@ -38,6 +39,22 @@ const SALES_URL     = process.env.SALES_URL || `http://localhost:${PORT}`;
 const SESSION_SECRET = process.env.SALES_SESSION_SECRET || ADMIN_TOKEN;
 const STEAM_COOKIE  = 'sales_steam';
 const STEAM_TTL_MS  = 60 * 60 * 1000; /* 1 hour to complete checkout */
+const ACTIVE_SUB_STATUSES = new Set(['active', 'trialing']);
+const PAST_DUE_SUB_STATUSES = new Set(['past_due', 'unpaid']);
+const CANCELED_SUB_STATUSES = new Set(['canceled', 'incomplete_expired']);
+
+function stripeTs(ts) {
+    if (!ts) return null;
+    return new Date(Number(ts) * 1000).toISOString();
+}
+
+function normalizeSubStatus(subStatus, fallback = 'active') {
+    const s = String(subStatus || '').toLowerCase();
+    if (ACTIVE_SUB_STATUSES.has(s)) return fallback;
+    if (PAST_DUE_SUB_STATUSES.has(s)) return 'past_due';
+    if (CANCELED_SUB_STATUSES.has(s)) return 'suspended';
+    return fallback;
+}
 
 /* ── Stripe thin client (no npm, raw HTTPS) ─────────────────────────── */
 function stripePost(endpoint, params) {
@@ -367,10 +384,20 @@ async function handleWebhook(req, res) {
                 }
                 /* Managed pilot: payment is confirmed, but an admin approves the
                    provision. Record payment + subscription and flag for review. */
+                let sub = null;
+                if (session.subscription) {
+                    try { sub = await stripeGet(`subscriptions/${session.subscription}`); }
+                    catch (e) { console.warn('[webhook] failed to fetch subscription:', e.message); }
+                }
                 DB.updateOrder(order.id, {
                     status: 'awaiting_approval',
                     stripe_payment: session.payment_intent || session.subscription || null,
+                    stripe_customer: session.customer || order.stripe_customer || null,
                     stripe_subscription: session.subscription || null,
+                    subscription_status: sub?.status || order.subscription_status || 'active',
+                    subscription_current_period_end: stripeTs(sub?.current_period_end) || order.subscription_current_period_end || null,
+                    subscription_cancel_at_period_end: sub?.cancel_at_period_end ? 1 : 0,
+                    subscription_canceled_at: stripeTs(sub?.canceled_at) || null,
                     steam_id: session.metadata?.steam_id || order.steam_id || null,
                 });
                 console.log(`[webhook] Order ${order.id} paid → awaiting_approval`);
@@ -381,6 +408,8 @@ async function handleWebhook(req, res) {
                         steamId: session.metadata?.steam_id || order.steam_id,
                     });
                 } catch (e) { console.error('[webhook] admin email failed:', e.message); }
+            } else if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.updated') {
+                await handleSubscriptionStateChange(event.data.object);
             } else if (event.type === 'customer.subscription.deleted') {
                 await handleSubscriptionCanceled(event.data.object);
             } else if (event.type === 'invoice.payment_failed') {
@@ -395,29 +424,134 @@ async function handleWebhook(req, res) {
 }
 
 /* ── Subscription lifecycle → bot access ─────────────────────────────── */
+function findOrderForSubscription(sub) {
+    if (sub?.id) {
+        const bySub = DB.getOrderBySubscription(sub.id);
+        if (bySub) return bySub;
+    }
+    if (sub?.customer) {
+        const byCustomer = DB.getOrderByStripeCustomer(sub.customer);
+        if (byCustomer) return byCustomer;
+    }
+    return null;
+}
+
+function buildAccountPayload(order, history = []) {
+    if (!order) return null;
+    return {
+        orderId: order.id,
+        customerEmail: order.customer_email,
+        customerName: order.customer_name,
+        steamId: order.steam_id,
+        status: order.status,
+        setupUrl: order.setup_url,
+        pelicanServerId: order.pelican_server_id,
+        subscription: {
+            id: order.stripe_subscription,
+            customerId: order.stripe_customer,
+            status: order.subscription_status,
+            currentPeriodEnd: order.subscription_current_period_end,
+            cancelAtPeriodEnd: !!order.subscription_cancel_at_period_end,
+            canceledAt: order.subscription_canceled_at,
+        },
+        history: history.map(o => ({
+            orderId: o.id,
+            status: o.status,
+            createdAt: o.created_at,
+            plan: o.plan,
+            subscriptionStatus: o.subscription_status,
+        })),
+    };
+}
+
+async function handleAccount(req, res) {
+    const steamId = verifySteam(req);
+    if (!steamId) return json(res, 401, { error: 'Sign in with Steam first' });
+    const latest = DB.getLatestOrderForSteam(steamId);
+    if (!latest) return json(res, 404, { error: 'No subscription found for this Steam account' });
+    const history = DB.getOrdersForUser({ steamId, limit: 10 });
+    return json(res, 200, { account: buildAccountPayload(latest, history) });
+}
+
+async function handlePortal(req, res) {
+    if (!STRIPE_SECRET) return json(res, 503, { error: 'Stripe not configured' });
+    const steamId = verifySteam(req);
+    if (!steamId) return json(res, 401, { error: 'Sign in with Steam first' });
+    const latest = DB.getLatestOrderForSteam(steamId);
+    if (!latest || !latest.stripe_customer) {
+        return json(res, 404, { error: 'No Stripe customer found for this account' });
+    }
+    try {
+        const session = await stripePost('billing_portal/sessions', {
+            customer: latest.stripe_customer,
+            return_url: BILLING_PORTAL_RETURN_URL,
+        });
+        return json(res, 200, { url: session.url });
+    } catch (e) {
+        console.error('[portal]', e.message);
+        return json(res, 500, { error: 'Unable to open billing portal right now' });
+    }
+}
+
+async function handleSubscriptionStateChange(sub) {
+    const order = findOrderForSubscription(sub);
+    if (!order) {
+        console.warn('[webhook] subscription update: no order found', sub?.id || sub?.customer || 'unknown');
+        return;
+    }
+    if (order.status === 'deleted') return;
+
+    const nextStatus = normalizeSubStatus(sub.status, order.status === 'awaiting_approval' ? 'awaiting_approval' : 'active');
+    DB.updateOrder(order.id, {
+        stripe_customer: sub.customer || order.stripe_customer || null,
+        stripe_subscription: sub.id || order.stripe_subscription || null,
+        subscription_status: sub.status || order.subscription_status || null,
+        subscription_current_period_end: stripeTs(sub.current_period_end),
+        subscription_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
+        subscription_canceled_at: stripeTs(sub.canceled_at),
+        status: nextStatus,
+    });
+    console.log(`[webhook] Subscription ${sub.id} -> ${sub.status} (order ${order.id} -> ${nextStatus})`);
+}
+
 async function handleSubscriptionCanceled(sub) {
-    const order = DB.getOrderBySubscription(sub.id);
+    const order = findOrderForSubscription(sub);
     if (!order) { console.warn('[webhook] cancel: no order for subscription', sub.id); return; }
+    if (order.status === 'deleted') return;
     if (order.pelican_server_id) {
         try { await Pelican.suspendServer(order.pelican_server_id); }
         catch (e) { console.error('[webhook] suspend failed:', e.message); }
     }
-    DB.updateOrder(order.id, { status: 'suspended' });
+    DB.updateOrder(order.id, {
+        status: 'suspended',
+        stripe_customer: sub.customer || order.stripe_customer || null,
+        stripe_subscription: sub.id || order.stripe_subscription || null,
+        subscription_status: sub.status || 'canceled',
+        subscription_current_period_end: stripeTs(sub.current_period_end),
+        subscription_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
+        subscription_canceled_at: stripeTs(sub.canceled_at) || new Date().toISOString(),
+    });
     console.log(`[webhook] Order ${order.id} suspended (subscription canceled)`);
     try { await Mailer.sendSuspendedEmail({ to: order.customer_email, name: order.customer_name, orderId: order.id }); }
     catch (e) { console.error('[webhook] suspended email failed:', e.message); }
 }
 
 async function handlePaymentFailed(invoice) {
-    const order = invoice.subscription ? DB.getOrderBySubscription(invoice.subscription) : null;
+    const order = invoice.subscription
+        ? DB.getOrderBySubscription(invoice.subscription)
+        : (invoice.customer ? DB.getOrderByStripeCustomer(invoice.customer) : null);
     if (!order) return;
-    DB.updateOrder(order.id, { status: 'past_due' });
+    DB.updateOrder(order.id, {
+        status: 'past_due',
+        subscription_status: 'past_due',
+    });
     console.log(`[webhook] Order ${order.id} past_due (payment failed)`);
 }
 
 async function handleInvoicePaid(invoice) {
-    if (!invoice.subscription) return;
-    const order = DB.getOrderBySubscription(invoice.subscription);
+    const order = invoice.subscription
+        ? DB.getOrderBySubscription(invoice.subscription)
+        : (invoice.customer ? DB.getOrderByStripeCustomer(invoice.customer) : null);
     if (!order) return;
     /* Only act when the bot was paused; first/renewal invoices on an already
        active (or awaiting-approval) order need nothing. */
@@ -425,7 +559,12 @@ async function handleInvoicePaid(invoice) {
     if (order.pelican_server_id) {
         try { await Pelican.unsuspendServer(order.pelican_server_id); }
         catch (e) { console.error('[webhook] unsuspend failed:', e.message); }
-        DB.updateOrder(order.id, { status: 'active' });
+        DB.updateOrder(order.id, {
+            status: 'active',
+            subscription_status: 'active',
+            subscription_cancel_at_period_end: 0,
+            subscription_canceled_at: null,
+        });
         console.log(`[webhook] Order ${order.id} resumed (invoice paid)`);
     }
 }
@@ -453,7 +592,9 @@ function verifyStripeSignature(rawBody, header, secret) {
 }
 
 /* ── Admin API ───────────────────────────────────────────────────────── */
-async function handleAdmin(req, res, pathname) {
+async function handleAdmin(req, res, requestUrl) {
+    const pathname = requestUrl.pathname;
+    const query = requestUrl.searchParams;
     const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
     const cookieFlags = `HttpOnly; SameSite=Strict${secure}; Path=/; Max-Age=86400`;
 
@@ -484,12 +625,35 @@ async function handleAdmin(req, res, pathname) {
 
     /* GET /admin/stats */
     if (req.method === 'GET' && pathname === '/admin/stats') {
+        const limit = parseInt(query.get('limit') || '200', 10);
+        const status = query.get('status') || '';
+        const search = query.get('search') || '';
         const portStats = DB.portStats();
+        const orders = DB.listOrders({ limit, status, search });
+        const orderCounts = DB.orderCounts();
         return json(res, 200, {
             tokens_available: DB.tokenPoolCount(),
             ports: portStats,
-            orders: DB.listOrders(200),
+            order_counts: orderCounts,
+            orders,
             test_orders_enabled: process.env.ALLOW_TEST_ORDERS === 'true',
+        });
+    }
+
+    if (req.method === 'GET' && pathname === '/admin/users') {
+        const limit = parseInt(query.get('limit') || '200', 10);
+        const search = query.get('search') || '';
+        return json(res, 200, {
+            users: DB.listUsers({ limit, search }),
+        });
+    }
+
+    if (req.method === 'GET' && pathname === '/admin/user-orders') {
+        const steamId = query.get('steam_id');
+        const email = query.get('email');
+        if (!steamId && !email) return json(res, 400, { error: 'steam_id or email is required' });
+        return json(res, 200, {
+            orders: DB.getOrdersForUser({ steamId, email, limit: parseInt(query.get('limit') || '50', 10) }),
         });
     }
 
@@ -571,7 +735,8 @@ async function handleAdmin(req, res, pathname) {
 
 /* ── HTTP server ─────────────────────────────────────────────────────── */
 const server = http.createServer(async (req, res) => {
-    const { pathname } = new URL(req.url, `http://localhost`);
+    const requestUrl = new URL(req.url, `http://localhost`);
+    const { pathname } = requestUrl;
 
     try {
         /* Static files */
@@ -584,6 +749,9 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/success') {
             return serveFile(res, path.join(PUBLIC_DIR, 'success.html'), 'text/html');
         }
+        if (pathname === '/account' || pathname === '/account.html') {
+            return serveFile(res, path.join(PUBLIC_DIR, 'account.html'), 'text/html');
+        }
         if (pathname.startsWith('/public/')) {
             const file = path.join(PUBLIC_DIR, pathname.replace('/public/', ''));
             const ext  = path.extname(file);
@@ -595,11 +763,13 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/auth/steam'          && req.method === 'GET') return handleSteamLogin(req, res);
         if (pathname === '/auth/steam/callback' && req.method === 'GET') return await handleSteamCallback(req, res);
         if (pathname === '/api/steam/me'        && req.method === 'GET') return json(res, 200, { steamId: verifySteam(req) });
+        if (pathname === '/api/account'         && req.method === 'GET') return await handleAccount(req, res);
+        if (pathname === '/api/portal'          && req.method === 'POST') return await handlePortal(req, res);
 
         /* API */
         if (pathname === '/api/checkout' && req.method === 'POST') return await handleCheckout(req, res);
         if (pathname === '/webhook'       && req.method === 'POST') return await handleWebhook(req, res);
-        if (pathname.startsWith('/admin'))                          return await handleAdmin(req, res, pathname);
+        if (pathname.startsWith('/admin'))                          return await handleAdmin(req, res, requestUrl);
 
         res.writeHead(404); res.end('Not found');
     } catch (e) {
