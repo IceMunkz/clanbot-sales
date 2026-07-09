@@ -11,6 +11,10 @@ const PELICAN_NEST = parseInt(process.env.PELICAN_NEST_ID || '0', 10);
 const PELICAN_NODE = parseInt(process.env.PELICAN_NODE_ID || '0', 10);
 const PELICAN_USER = parseInt(process.env.PELICAN_USER_ID || '0', 10);  // default owner user
 const CREDENTIAL_SERVER_URL = process.env.CREDENTIAL_SERVER_URL || '';
+/* Central Clanbot-account directory the provisioned bot reports its roster to.
+   Defaults to this sales server's own public URL. */
+const CLANBOT_ACCOUNT_URL = process.env.CLANBOT_ACCOUNT_URL || process.env.SALES_URL || '';
+const CLANBOT_ACCOUNT_SECRET = (process.env.CLANBOT_ACCOUNT_SECRET || '').trim();
 const GIT_REPO = process.env.GIT_REPO || '';
 const DOCKER_IMAGE = process.env.DOCKER_IMAGE || 'ghcr.io/ptero-eggs/yolks:nodejs_22';
 /* Power signals (start/stop/restart) live on the Client API and need a Client
@@ -108,6 +112,12 @@ async function createServer({ orderId, customerEmail, port, discordToken, discor
             RPP_RECONNECT_INTERVAL: '15000',
             RPP_NEED_ADMIN_PRIVILEGES: 'true',
             RPP_LOG_CALL_STACK: 'false',
+            /* Clanbot Accounts: wire the new deployment to the central account
+               directory so its roster feeds cross-clan login + SSO. Uses the
+               global shared secret (per-deployment secrets are a later hardening
+               — the guild id isn't known until the wizard completes). */
+            CLANBOT_ACCOUNT_URL: CLANBOT_ACCOUNT_URL,
+            CLANBOT_ACCOUNT_SECRET: CLANBOT_ACCOUNT_SECRET,
             GIT_REPO: GIT_REPO,
         },
         limits: {

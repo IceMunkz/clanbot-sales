@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Clans · ClanBot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0f1316; --surface: #172028; --line: #274252; --text: #eaf3f7;
+  --muted: #9db3bf; --accent: #00a3a3; --good: #2eb67d; --warn: #f2c14e; --bad: #f26464;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: "Space Grotesk", sans-serif; color: var(--text); min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% -20%, rgba(0,163,163,.22), transparent 45%),
+    radial-gradient(circle at 85% 0%, rgba(242,193,78,.2), transparent 35%),
+    var(--bg);
+  padding: 24px;
+}
+.container { max-width: 900px; margin: 0 auto; display: grid; gap: 16px; }
+.card { background: rgba(23,32,40,0.9); border: 1px solid var(--line); border-radius: 18px; padding: 20px; }
+h1 { margin: 0 0 8px; }
+p { color: var(--muted); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button, .btn {
+  border: 0; border-radius: 12px; padding: 10px 14px; font: inherit; cursor: pointer;
+  font-weight: 600; text-decoration: none; display: inline-block;
+}
+.btn-primary { background: linear-gradient(135deg, #00a3a3, #007777); color: #eaffff; }
+.btn-secondary { background: #1c2b34; color: var(--text); border: 1px solid var(--line); }
+.badge { display: inline-block; padding: 4px 10px; border-radius: 999px; text-transform: uppercase; font-size: 0.72rem; font-weight: 600; letter-spacing: .04em; }
+.role-hoster { background: rgba(0,163,163,.2); color: #aef2f2; }
+.role-leader { background: rgba(242,193,78,.2); color: #ffecb8; }
+.role-member { background: rgba(155,178,191,.2); color: #d3e2ea; }
+.clan-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: #12202a; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
+}
+.clan-row .meta { display: grid; gap: 4px; }
+.clan-name { font-weight: 600; font-size: 1.05rem; }
+.mono { font-family: "IBM Plex Mono", monospace; color: var(--muted); font-size: .8rem; }
+.muted { color: var(--muted); }
+.empty, .signin { text-align: center; padding: 24px; }
+</style>
+</head>
+<body>
+<main class="container">
+  <section class="card">
+    <h1>My Clans</h1>
+    <p>Every clan your Steam account belongs to. Click <strong>Enter</strong> to jump straight into a clan's dashboard — no second login.</p>
+    <div class="actions">
+      <a class="btn btn-secondary" href="/account">← Account</a>
+    </div>
+  </section>
+
+  <section class="card" id="content">
+    <p class="muted">Loading…</p>
+  </section>
+</main>
+
+<script>
+const content = document.getElementById('content');
+
+function badgeClass(role) {
+  if (role === 'hoster') return 'role-hoster';
+  if (role === 'leader') return 'role-leader';
+  return 'role-member';
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function load() {
+  let data;
+  try {
+    const res = await fetch('/api/clans', { credentials: 'same-origin' });
+    if (res.status === 401) {
+      content.innerHTML = '<div class="signin"><p>Sign in with Steam to see your clans.</p>'
+        + '<a class="btn btn-primary" href="/auth/steam">Sign in with Steam</a></div>';
+      return;
+    }
+    data = await res.json();
+  } catch (e) {
+    content.innerHTML = '<p class="muted">Could not load your clans. Try again shortly.</p>';
+    return;
+  }
+
+  const clans = (data && data.clans) || [];
+  if (!clans.length) {
+    content.innerHTML = '<div class="empty"><p>No clans found for your account yet.</p>'
+      + '<p class="muted">Once a clan you\'re in reports its roster, it\'ll show up here automatically.</p></div>';
+    return;
+  }
+
+  content.innerHTML = clans.map(c => `
+    <div class="clan-row">
+      <div class="meta">
+        <span class="clan-name">${esc(c.clanName)}</span>
+        <span class="mono">${esc(c.guildId)}</span>
+      </div>
+      <div class="actions">
+        <span class="badge ${badgeClass(c.role)}">${esc(c.role)}</span>
+        <a class="btn btn-primary" href="${esc(c.enterUrl)}">Enter →</a>
+      </div>
+    </div>
+  `).join('');
+}
+load();
+</script>
+</body>
+</html>

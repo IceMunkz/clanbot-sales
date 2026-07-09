@@ -39,6 +39,14 @@ const SALES_URL     = process.env.SALES_URL || `http://localhost:${PORT}`;
 const SESSION_SECRET = process.env.SALES_SESSION_SECRET || ADMIN_TOKEN;
 const STEAM_COOKIE  = 'sales_steam';
 const STEAM_TTL_MS  = 60 * 60 * 1000; /* 1 hour to complete checkout */
+
+/* Clanbot Accounts: shared secret bot deployments use to sign roster pushes
+   and that we use to sign SSO handoff tokens. Must match the bot's
+   CLANBOT_ACCOUNT_SECRET. Empty = the cross-clan account feature is disabled
+   (roster ingestion + SSO respond 503). Never falls back to ADMIN_TOKEN — the
+   value has to be identical on BOTH services, so it must be set explicitly. */
+const ACCOUNT_SECRET = (process.env.CLANBOT_ACCOUNT_SECRET || '').trim();
+const SSO_TTL_MS     = 120 * 1000; /* SSO handoff token lifetime */
 const ACTIVE_SUB_STATUSES = new Set(['active', 'trialing']);
 const PAST_DUE_SUB_STATUSES = new Set(['past_due', 'unpaid']);
 const CANCELED_SUB_STATUSES = new Set(['canceled', 'incomplete_expired']);
@@ -263,6 +271,109 @@ function verifySteam(req) {
         if (!data.steamId || Date.now() - data.iat > STEAM_TTL_MS) return null;
         return String(data.steamId);
     } catch { return null; }
+}
+
+/* ── Clanbot Accounts: shared-secret HMAC (roster push + SSO handoff) ──── */
+/* The secret that governs a given deployment: its own per-deployment secret
+   if provisioning set one, else the global ACCOUNT_SECRET. Both this service
+   and the bot resolve to the same value. */
+function getSigningSecret(guildId) {
+    const dep = guildId ? DB.getDeployment(guildId) : null;
+    return (dep && dep.shared_secret) || ACCOUNT_SECRET;
+}
+
+/* Constant-time verify of `HMAC_SHA256(secret, timestamp + '.' + rawBody)`
+   presented as a hex string. Mirrors the Stripe-webhook verification style. */
+function verifyClanbotSig(secret, timestamp, rawBody, sigHex) {
+    if (!secret || !timestamp || !sigHex) return false;
+    const payload = `${timestamp}.${rawBody}`;
+    const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    try {
+        return crypto.timingSafeEqual(Buffer.from(String(sigHex), 'hex'), Buffer.from(expected, 'hex'));
+    } catch { return false; }
+}
+
+/* ── Route: POST /api/roster — a bot deployment reports its member roster ─ */
+async function handleRoster(req, res) {
+    if (!ACCOUNT_SECRET) return json(res, 503, { error: 'accounts feature disabled' });
+
+    const raw = (await readBody(req)).toString();
+    const ts  = req.headers['x-clanbot-ts'];
+    const sig = req.headers['x-clanbot-sig'];
+    if (!ts || !sig) return json(res, 401, { error: 'unsigned' });
+    /* Replay window: ±5 minutes. */
+    if (!/^\d+$/.test(String(ts)) || Math.abs(Date.now() - Number(ts)) > 5 * 60 * 1000) {
+        return json(res, 401, { error: 'stale timestamp' });
+    }
+
+    let body;
+    try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
+    const guildId = String(body.guildId || '').trim();
+    if (!guildId) return json(res, 400, { error: 'missing guildId' });
+
+    /* TOFU: first push from a guild has no per-deployment secret yet, so it is
+       verified against the global ACCOUNT_SECRET; the deployment row is then
+       created. Once provisioning sets a per-deployment secret, that governs. */
+    const secret = getSigningSecret(guildId);
+    if (!verifyClanbotSig(secret, ts, raw, sig)) return json(res, 401, { error: 'bad signature' });
+
+    const members = Array.isArray(body.members) ? body.members : [];
+    DB.upsertDeployment({ guildId, clanName: body.clanName, dashboardUrl: body.dashboardUrl });
+    DB.replaceRoster(guildId, members);
+    return json(res, 200, { ok: true, count: members.length });
+}
+
+/* Mint a short-lived, single-use SSO handoff token for a specific clan. The
+   bot deployment verifies it with the same secret, then re-derives the role
+   locally before minting its own session — so this token is a capability to
+   *attempt* login, never an authority on membership. */
+function mintSsoToken({ steamId, guildId, role }) {
+    const secret = getSigningSecret(guildId);
+    const payload = Buffer.from(JSON.stringify({
+        steamId: String(steamId),
+        guildId: String(guildId),
+        role: String(role || 'member'),
+        nonce: crypto.randomBytes(12).toString('hex'),
+        exp: Date.now() + SSO_TTL_MS,
+    })).toString('base64url');
+    const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+    return `${payload}.${sig}`;
+}
+
+/* ── Route: GET /api/clans — clans the signed-in member belongs to ─────── */
+async function handleClans(req, res) {
+    const steamId = verifySteam(req);
+    if (!steamId) return json(res, 401, { error: 'sign in with Steam first' });
+    const clans = DB.getClansForSteam(steamId).map(c => ({
+        guildId: c.guild_id,
+        clanName: c.clan_name || 'Unnamed clan',
+        role: c.role,
+        lastSeen: c.last_seen,
+        /* Entry always goes through the SSO launcher — never expose the raw
+           dashboard URL, and never let the browser pick the guild for SSO. */
+        enterUrl: `/sso/launch?guild_id=${encodeURIComponent(c.guild_id)}`,
+    }));
+    return json(res, 200, { steamId, clans });
+}
+
+/* ── Route: GET /sso/launch?guild_id= — hand the member off to a clan ──── */
+async function handleSsoLaunch(req, res) {
+    if (!ACCOUNT_SECRET) return json(res, 503, { error: 'accounts feature disabled' });
+    const steamId = verifySteam(req);
+    if (!steamId) return redirect(res, '/account?steam=needlogin');
+
+    const u = new URL(req.url, SALES_URL);
+    const guildId = String(u.searchParams.get('guild_id') || '').trim();
+    if (!guildId) return json(res, 400, { error: 'missing guild_id' });
+
+    const dep = DB.getDeployment(guildId);
+    if (!dep || !dep.dashboard_url) return json(res, 404, { error: 'unknown clan' });
+    if (!DB.isMemberOf(steamId, guildId)) return json(res, 403, { error: 'not a member of that clan' });
+
+    const membership = DB.getClansForSteam(steamId).find(c => c.guild_id === guildId);
+    const token = mintSsoToken({ steamId, guildId, role: membership ? membership.role : 'member' });
+    const target = `${String(dep.dashboard_url).replace(/\/$/, '')}/sso?token=${encodeURIComponent(token)}`;
+    return redirect(res, target);
 }
 
 /* ── Route: GET /auth/steam — kick off Steam OpenID ──────────────────── */
@@ -752,6 +863,9 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/account' || pathname === '/account.html') {
             return serveFile(res, path.join(PUBLIC_DIR, 'account.html'), 'text/html');
         }
+        if (pathname === '/clans' || pathname === '/clans.html') {
+            return serveFile(res, path.join(PUBLIC_DIR, 'clans.html'), 'text/html');
+        }
         if (pathname.startsWith('/public/')) {
             const file = path.join(PUBLIC_DIR, pathname.replace('/public/', ''));
             const ext  = path.extname(file);
@@ -765,6 +879,11 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/api/steam/me'        && req.method === 'GET') return json(res, 200, { steamId: verifySteam(req) });
         if (pathname === '/api/account'         && req.method === 'GET') return await handleAccount(req, res);
         if (pathname === '/api/portal'          && req.method === 'POST') return await handlePortal(req, res);
+
+        /* Clanbot Accounts: cross-clan directory + SSO */
+        if (pathname === '/api/roster'          && req.method === 'POST') return await handleRoster(req, res);
+        if (pathname === '/api/clans'           && req.method === 'GET') return await handleClans(req, res);
+        if (pathname === '/sso/launch'          && req.method === 'GET') return await handleSsoLaunch(req, res);
 
         /* API */
         if (pathname === '/api/checkout' && req.method === 'POST') return await handleCheckout(req, res);

@@ -100,6 +100,37 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_orders_subscription ON orders(stripe_subscription);
 `);
 
+/* ── Clanbot Accounts: cross-clan directory ───────────────────────────────
+   Each bot deployment (one Discord guild / clan) pushes its member roster
+   here so a member logging in with Steam can see every clan they belong to
+   and SSO into any of them.
+
+   deployments : one row per clan/bot deployment that has reported in.
+   memberships : steam_id ↔ guild_id (+ role), replaced wholesale on each push.
+
+   shared_secret is nullable: v1 verifies roster pushes and signs SSO tokens
+   with a single global CLANBOT_ACCOUNT_SECRET; provisioning may later set a
+   per-deployment secret (getSigningSecret prefers it when present). */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS deployments (
+    guild_id      TEXT PRIMARY KEY,
+    clan_name     TEXT,
+    dashboard_url TEXT,
+    shared_secret TEXT,
+    last_seen     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS memberships (
+    steam_id   TEXT NOT NULL,
+    guild_id   TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'member',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (steam_id, guild_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memberships_steam ON memberships(steam_id);
+  CREATE INDEX IF NOT EXISTS idx_memberships_guild ON memberships(guild_id);
+`);
+
 module.exports = {
     /* Token pool */
     addToken(clientId, botToken) {
@@ -334,6 +365,59 @@ module.exports = {
 
         return { alreadyDone: false, port: portRow.port, token: tokenRow };
     }),
+
+    /* ── Clanbot Accounts: deployments + memberships directory ──────────── */
+
+    getDeployment(guildId) {
+        return db.prepare('SELECT * FROM deployments WHERE guild_id = ?').get(String(guildId));
+    },
+    /* Create/refresh a deployment's metadata. Never overwrites shared_secret
+       (managed separately by setDeploymentSecret / provisioning). */
+    upsertDeployment({ guildId, clanName, dashboardUrl }) {
+        db.prepare(
+            `INSERT INTO deployments (guild_id, clan_name, dashboard_url, last_seen)
+             VALUES (?, ?, ?, datetime('now'))
+             ON CONFLICT(guild_id) DO UPDATE SET
+                clan_name     = COALESCE(excluded.clan_name, deployments.clan_name),
+                dashboard_url = COALESCE(excluded.dashboard_url, deployments.dashboard_url),
+                last_seen     = datetime('now')`
+        ).run(String(guildId), clanName || null, dashboardUrl || null);
+    },
+    setDeploymentSecret(guildId, secret) {
+        db.prepare('UPDATE deployments SET shared_secret = ? WHERE guild_id = ?')
+            .run(secret ? String(secret) : null, String(guildId));
+    },
+
+    /* Replace a deployment's entire roster in one transaction. members is
+       [{ steamId, role }]. Anyone no longer listed is removed from this clan. */
+    replaceRoster: db.transaction((guildId, members) => {
+        const gid = String(guildId);
+        db.prepare('DELETE FROM memberships WHERE guild_id = ?').run(gid);
+        const ins = db.prepare(
+            `INSERT OR REPLACE INTO memberships (steam_id, guild_id, role, updated_at)
+             VALUES (?, ?, ?, datetime('now'))`
+        );
+        for (const m of members || []) {
+            if (!m || !m.steamId) continue;
+            ins.run(String(m.steamId), gid, String(m.role || 'member'));
+        }
+    }),
+
+    /* All clans a steamId belongs to, joined with deployment metadata. */
+    getClansForSteam(steamId) {
+        return db.prepare(
+            `SELECT m.guild_id, m.role, d.clan_name, d.dashboard_url, d.last_seen
+             FROM memberships m
+             JOIN deployments d ON d.guild_id = m.guild_id
+             WHERE m.steam_id = ?
+             ORDER BY d.clan_name IS NULL, d.clan_name COLLATE NOCASE, m.guild_id`
+        ).all(String(steamId));
+    },
+    isMemberOf(steamId, guildId) {
+        return !!db.prepare(
+            'SELECT 1 FROM memberships WHERE steam_id = ? AND guild_id = ?'
+        ).get(String(steamId), String(guildId));
+    },
 
     /* Return an order's port + bot token to their pools (used when a customer
        is fully deleted). Bot tokens go back to 'available' for reuse. */
