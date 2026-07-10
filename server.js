@@ -282,6 +282,16 @@ function getSigningSecret(guildId) {
     return (dep && dep.shared_secret) || ACCOUNT_SECRET;
 }
 
+/* A deployment's dashboard URL must be absolute — a scheme-less value (bare
+   IP/host) would make the SSO redirect relative to THIS site and 404. Repair
+   rather than reject: prepend https:// when the scheme is missing. */
+function absDashboardUrl(u) {
+    u = String(u || '').trim().replace(/\/$/, '');
+    if (!u) return null;
+    if (!u.includes('://')) u = 'https://' + u;
+    return u;
+}
+
 /* Constant-time verify of `HMAC_SHA256(secret, timestamp + '.' + rawBody)`
    presented as a hex string. Mirrors the Stripe-webhook verification style. */
 function verifyClanbotSig(secret, timestamp, rawBody, sigHex) {
@@ -318,7 +328,7 @@ async function handleRoster(req, res) {
     if (!verifyClanbotSig(secret, ts, raw, sig)) return json(res, 401, { error: 'bad signature' });
 
     const members = Array.isArray(body.members) ? body.members : [];
-    DB.upsertDeployment({ guildId, clanName: body.clanName, dashboardUrl: body.dashboardUrl });
+    DB.upsertDeployment({ guildId, clanName: body.clanName, dashboardUrl: absDashboardUrl(body.dashboardUrl) });
     DB.replaceRoster(guildId, members);
     return json(res, 200, { ok: true, count: members.length });
 }
@@ -372,7 +382,9 @@ async function handleSsoLaunch(req, res) {
 
     const membership = DB.getClansForSteam(steamId).find(c => c.guild_id === guildId);
     const token = mintSsoToken({ steamId, guildId, role: membership ? membership.role : 'member' });
-    const target = `${String(dep.dashboard_url).replace(/\/$/, '')}/sso?token=${encodeURIComponent(token)}`;
+    /* absDashboardUrl repairs any legacy scheme-less rows so the redirect is
+       always absolute (a relative Location would 404 against this site). */
+    const target = `${absDashboardUrl(dep.dashboard_url)}/sso?token=${encodeURIComponent(token)}`;
     return redirect(res, target);
 }
 
@@ -403,7 +415,7 @@ async function handleClansLookup(req, res) {
         guildId: c.guild_id,
         clanName: c.clan_name || 'Unnamed clan',
         role: c.role,
-        dashboardUrl: c.dashboard_url || null,
+        dashboardUrl: absDashboardUrl(c.dashboard_url),
     }));
     return json(res, 200, { clans });
 }
