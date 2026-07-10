@@ -376,6 +376,38 @@ async function handleSsoLaunch(req, res) {
     return redirect(res, target);
 }
 
+/* ── Route: POST /api/clans-lookup — server-to-server directory lookup ───
+   Lets a bot deployment fetch the clans a steamId belongs to so it can render
+   an inline "my clans" switcher on its own dashboard. Authenticated by the
+   shared secret (HMAC), NOT a member cookie — the caller is a trusted
+   deployment, not the browser. Not guild-scoped, so it verifies against the
+   global ACCOUNT_SECRET. */
+async function handleClansLookup(req, res) {
+    if (!ACCOUNT_SECRET) return json(res, 503, { error: 'accounts feature disabled' });
+
+    const raw = (await readBody(req)).toString();
+    const ts  = req.headers['x-clanbot-ts'];
+    const sig = req.headers['x-clanbot-sig'];
+    if (!ts || !sig) return json(res, 401, { error: 'unsigned' });
+    if (!/^\d+$/.test(String(ts)) || Math.abs(Date.now() - Number(ts)) > 5 * 60 * 1000) {
+        return json(res, 401, { error: 'stale timestamp' });
+    }
+    if (!verifyClanbotSig(ACCOUNT_SECRET, ts, raw, sig)) return json(res, 401, { error: 'bad signature' });
+
+    let body;
+    try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad json' }); }
+    const steamId = String(body.steamId || '').trim();
+    if (!steamId) return json(res, 400, { error: 'missing steamId' });
+
+    const clans = DB.getClansForSteam(steamId).map(c => ({
+        guildId: c.guild_id,
+        clanName: c.clan_name || 'Unnamed clan',
+        role: c.role,
+        dashboardUrl: c.dashboard_url || null,
+    }));
+    return json(res, 200, { clans });
+}
+
 /* ── Route: GET /auth/steam — kick off Steam OpenID ──────────────────── */
 function handleSteamLogin(req, res) {
     const steamUrl = 'https://steamcommunity.com/openid/login?' + new URLSearchParams({
@@ -883,6 +915,7 @@ const server = http.createServer(async (req, res) => {
         /* Clanbot Accounts: cross-clan directory + SSO */
         if (pathname === '/api/roster'          && req.method === 'POST') return await handleRoster(req, res);
         if (pathname === '/api/clans'           && req.method === 'GET') return await handleClans(req, res);
+        if (pathname === '/api/clans-lookup'    && req.method === 'POST') return await handleClansLookup(req, res);
         if (pathname === '/sso/launch'          && req.method === 'GET') return await handleSsoLaunch(req, res);
 
         /* API */
