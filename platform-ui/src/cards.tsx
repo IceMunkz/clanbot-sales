@@ -272,6 +272,68 @@ function MemberDrawer({ clan, member, mySteamId, onClose, onChanged }: {
   )
 }
 
+/* ── Active clan — the live Rust+ team (read-only, transient) ─────────────
+   Shows who is in the in-game team right now. It never changes the permanent
+   clan roster; leaders explicitly promote real members (a merge raid can put
+   hundreds of allies here — the count guards against a mass-import). */
+export function ActiveClanCard({ clan, onChanged }: { clan: ClanDetail; onChanged: () => void }) {
+  const lead = CAN_LEAD(clan.myRole)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const notInClan = clan.activeRoster.filter(m => !m.inClan)
+
+  const add = async (m: ClanDetail['activeRoster'][number]) => {
+    setErr('')
+    try { await api.addMember(clan.clanId, m.steamId, m.persona || ''); onChanged() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'failed') }
+  }
+  const importAll = async () => {
+    if (!confirm(`Add ${notInClan.length} active player${notInClan.length === 1 ? '' : 's'} to your permanent clan roster?\n\nOnly do this if these are all real clan members — during a merge raid this list includes allies.`)) return
+    setErr('')
+    try { const r = await api.importActive(clan.clanId); setMsg(`Added ${r.added} member${r.added === 1 ? '' : 's'} to the roster.`); onChanged() }
+    catch (e) { setErr(e instanceof Error ? e.message : 'failed') }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 8 }}>
+        <h2 style={{ margin: 0 }}>🎮 Active clan <span className="muted" style={{ fontSize: 13, fontWeight: 400 }}>live in-game · {clan.activeTotal}</span></h2>
+        {lead && notInClan.length > 0 && notInClan.length <= 60 && (
+          <button className="btn-secondary btn-sm" onClick={importAll}>+ Add all {notInClan.length} to roster</button>
+        )}
+      </div>
+      <p style={{ fontSize: 13, marginTop: 0 }}>Who's in your Rust+ team right now. This is a live view — it never changes your clan roster. Add the ones you want to keep.</p>
+
+      {clan.activeRoster.length === 0 && <p className="muted" style={{ fontSize: 14 }}>Nobody in-game right now (or the bot hasn't reported yet).</p>}
+      {clan.activeRoster.map(m => (
+        <div className="row" key={m.steamId}>
+          <div className="row-main">
+            <Avatar url={m.avatar} name={null} steamId={m.steamId} />
+            <div style={{ minWidth: 0 }}>
+              <div className="name">{m.persona || m.steamId}</div>
+              <div className="mono">{m.steamId}</div>
+            </div>
+          </div>
+          <div>
+            {m.inClan
+              ? <span className="badge rsvp-yes">in roster</span>
+              : lead
+                ? <button className="btn-ghost btn-sm" onClick={() => add(m)}>+ Add</button>
+                : <span className="muted" style={{ fontSize: 12 }}>guest</span>}
+          </div>
+        </div>
+      ))}
+      {clan.activeTotal > clan.activeRoster.length && (
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          …and {clan.activeTotal - clan.activeRoster.length} more in-game (merge in progress?)
+        </div>
+      )}
+      {msg && <div className="ok">{msg}</div>}
+      {err && <div className="error">{err}</div>}
+    </div>
+  )
+}
+
 /* ── Applications (recruitment pipeline + vetting) ────────────────────── */
 
 export function ApplicationsCard({ clan, onChanged }: { clan: ClanDetail; onChanged: () => void }) {

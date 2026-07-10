@@ -22,11 +22,16 @@ export interface Application {
   persona: string | null; avatar: string | null
   vacBans: number | null; gameBans: number | null; daysSinceLastBan: number | null
 }
+export interface ActiveMember {
+  steamId: string; role: string; inClan: boolean
+  persona: string | null; avatar: string | null
+}
 export interface ClanDetail {
   clanId: string; name: string; tag: string | null
   deploymentGuildId: string | null; myRole: string
   applicationsOpen: boolean; applyUrl: string
   roster: RosterMember[]; wipes: WipePlan[]
+  activeRoster: ActiveMember[]; activeTotal: number
   profiles: Record<string, { persona: string | null; avatar: string | null }>
   announcements: Announcement[]
   pendingApplications: number
@@ -59,6 +64,8 @@ export const api = {
   create: (name: string, tag: string) => post('/api/myclan/create', { name, tag }),
   addMember: (clanId: string, steamId: string, name: string) =>
     post('/api/myclan/member/add', { clanId, steamId, name }),
+  importActive: (clanId: string) =>
+    post('/api/myclan/import-active', { clanId }) as Promise<{ ok: boolean; added: number }>,
   removeMember: (clanId: string, steamId: string) =>
     post('/api/myclan/member/remove', { clanId, steamId }),
   setRole: (clanId: string, steamId: string, role: string) =>

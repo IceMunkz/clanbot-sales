@@ -790,32 +790,47 @@ module.exports = {
                 'INSERT INTO clans (clan_id, name, owner_steam_id, deployment_guild_id) VALUES (?, ?, ?, ?)'
             ).run(clanId, clanName || 'My Clan', String(owner), gid);
             clan = { clan_id: clanId };
-        } else if (clanName) {
-            db.prepare('UPDATE clans SET name = ? WHERE clan_id = ?').run(clanName, clan.clan_id);
         }
+        /* The live Rust+ team is TRANSIENT — a merge raid can balloon it to
+           hundreds of allied players. It must NOT become permanent clan
+           membership. So the bridge only:
+             1. ensures the owner is a curated member (so they can manage it),
+             2. refreshes display names of people ALREADY in the roster.
+           It never ADDS or REMOVES members. The live team is stored in
+           `memberships` (by replaceRoster) and surfaced as the read-only
+           "Active clan" view; leaders promote real members explicitly. */
+        const ownerName = (list.find(m => m.steamId === owner) || {}).name || null;
+        db.prepare(
+            `INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, 'owner')
+             ON CONFLICT(clan_id, steam_id) DO NOTHING`
+        ).run(clan.clan_id, String(owner), ownerName);
 
-        /* Upsert members WITHOUT touching platform-side profile fields
-           (stage, rank, bed/locker, notes) — a full replace would wipe them on
-           every 10-minute roster push. Members absent from the push are
-           removed (the deployment is authoritative for WHO is in the clan). */
-        const ins = db.prepare(
-            `INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, ?)
-             ON CONFLICT(clan_id, steam_id) DO UPDATE SET
-               role = excluded.role,
-               name = COALESCE(excluded.name, clan_members.name)`
-        );
-        const pushed = new Set();
-        for (const m of list) {
-            const role = m.role === 'hoster' ? 'owner' : (m.role === 'leader' ? 'leader' : 'member');
-            ins.run(clan.clan_id, String(m.steamId), m.name || null, role);
-            pushed.add(String(m.steamId));
-        }
-        const current = db.prepare('SELECT steam_id FROM clan_members WHERE clan_id = ?').all(clan.clan_id);
-        const del = db.prepare('DELETE FROM clan_members WHERE clan_id = ? AND steam_id = ?');
-        for (const row of current) {
-            if (!pushed.has(row.steam_id)) del.run(clan.clan_id, row.steam_id);
-        }
+        const upd = db.prepare('UPDATE clan_members SET name = COALESCE(?, name) WHERE clan_id = ? AND steam_id = ?');
+        for (const m of list) if (m.name) upd.run(m.name, clan.clan_id, String(m.steamId));
         return clan.clan_id;
+    }),
+
+    /* The live Rust+ team roster for a deployment (from the roster push). This
+       is the "Active clan" view — transient, may balloon during merge raids,
+       and is NEVER auto-promoted into the curated clan_members. */
+    getDeploymentRoster(guildId) {
+        return db.prepare(
+            'SELECT steam_id, role FROM memberships WHERE guild_id = ? ORDER BY steam_id'
+        ).all(String(guildId));
+    },
+    /* Explicit, leader-initiated promotion of live members into the curated
+       roster. Returns how many were newly added. */
+    bulkAddClanMembers: db.transaction((clanId, items) => {
+        const ins = db.prepare(
+            `INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, 'member')
+             ON CONFLICT(clan_id, steam_id) DO NOTHING`
+        );
+        let added = 0;
+        for (const it of items || []) {
+            if (!it || !/^\d{17}$/.test(String(it.steamId))) continue;
+            added += ins.run(String(clanId), String(it.steamId), it.name || null).changes;
+        }
+        return added;
     }),
 
     /* Return an order's port + bot token to their pools (used when a customer

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiError, ClanDetail, MyClanResponse } from './api'
-import { AnnouncementsCard, ApplicationsCard, CAN_LEAD, RosterCard, WipesCard } from './cards'
+import { ActiveClanCard, AnnouncementsCard, ApplicationsCard, CAN_LEAD, RosterCard, WipesCard } from './cards'
 
 /* ClanBot Platform — the website-side Clan Manager. Works with zero bot
    involvement; when a clan is deployment-backed, "Wipe tools" links through
@@ -209,6 +209,8 @@ function ClanHome({ clan, mySteamId, onChanged }: {
         <WipesCard clan={clan} mySteamId={mySteamId} onChanged={onChanged} />
         <RosterCard clan={clan} mySteamId={mySteamId} onChanged={onChanged} />
       </div>
+
+      {clan.deploymentGuildId && <ActiveClanCard clan={clan} onChanged={onChanged} />}
     </>
   )
 }

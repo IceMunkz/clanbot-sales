@@ -89,29 +89,60 @@ describe('platform clan manager', () => {
         assert.equal(DB.getWipePlan(id).status, 'done');
     });
 
-    test('bridge materializes a clan from a deployment roster push and keeps it in sync', () => {
+    test('bridge links a clan + seeds the owner ONLY (no auto-membership)', () => {
         const members = [
             { steamId: 'H1', role: 'hoster' },
-            { steamId: 'M1', role: 'member' },
+            { steamId: 'M1', role: 'member', name: 'Mike' },
+            { steamId: 'A1', role: 'member' }, // merge-raid ally
         ];
         const clanId = DB.bridgeDeploymentClan('guild-9', 'Bravo', members);
         assert.ok(clanId);
         const clan = DB.getClanByDeployment('guild-9');
         assert.equal(clan.name, 'Bravo');
         assert.equal(clan.owner_steam_id, 'H1');
-        assert.equal(DB.getClanMemberRole(clanId, 'H1'), 'owner');   // hoster → owner
-        assert.equal(DB.getClanMemberRole(clanId, 'M1'), 'member');
-
-        /* second push: member left, leader joined, name updated — full replace */
-        DB.bridgeDeploymentClan('guild-9', 'Bravo Renamed', [
-            { steamId: 'H1', role: 'hoster' },
-            { steamId: 'L1', role: 'leader' },
-        ]);
-        assert.equal(DB.getClanByDeployment('guild-9').name, 'Bravo Renamed');
-        assert.equal(DB.getClanMemberRole(clanId, 'L1'), 'leader');
+        /* Only the owner becomes a curated member — NOT the live team. */
+        assert.equal(DB.getClanMemberRole(clanId, 'H1'), 'owner');
         assert.equal(DB.getClanMemberRole(clanId, 'M1'), null);
-        /* still the same platform clan record, not a duplicate */
-        assert.equal(DB.getClanByDeployment('guild-9').clan_id, clanId);
+        assert.equal(DB.getClanMemberRole(clanId, 'A1'), null);
+        assert.equal(DB.getClanRoster(clanId).length, 1);
+    });
+
+    test('bridge never adds/removes members, only refreshes names + keeps clan record', () => {
+        const clanId = DB.bridgeDeploymentClan('guild-9', 'Bravo', [{ steamId: 'H1', role: 'hoster' }]);
+        /* leader curates the roster on the platform */
+        DB.addClanMember(clanId, 'M1', 'OldName');
+        DB.setClanMemberStage(clanId, 'M1', 'trial');
+
+        /* a merge-raid push with 3 allies must NOT change the roster… */
+        DB.bridgeDeploymentClan('guild-9', 'Bravo', [
+            { steamId: 'H1', role: 'hoster' },
+            { steamId: 'M1', role: 'member', name: 'NewName' }, // name refresh only
+            { steamId: 'X1', role: 'member' }, { steamId: 'X2', role: 'member' },
+        ]);
+        assert.equal(DB.getClanRoster(clanId).length, 2);          // still H1 + M1
+        assert.equal(DB.getClanMemberRole(clanId, 'X1'), null);    // allies NOT added
+        const m1 = DB.getClanRoster(clanId).find(m => m.steam_id === 'M1');
+        assert.equal(m1.name, 'NewName');                          // name refreshed
+        assert.equal(m1.stage, 'trial');                           // profile preserved
+        /* …and the platform-chosen clan name is not overwritten by pushes */
+        DB.updateClan(clanId, { name: 'Renamed On Site' });
+        DB.bridgeDeploymentClan('guild-9', 'Bot Name', [{ steamId: 'H1', role: 'hoster' }]);
+        assert.equal(DB.getClanByDeployment('guild-9').name, 'Renamed On Site');
+    });
+
+    test('explicit import of the active roster promotes live members', () => {
+        const clanId = DB.bridgeDeploymentClan('guild-imp', 'Imp', [{ steamId: 'H1', role: 'hoster' }]);
+        /* simulate the live roster the bot pushed into memberships */
+        DB.upsertDeployment({ guildId: 'guild-imp', clanName: 'Imp', dashboardUrl: 'https://x' });
+        DB.replaceRoster('guild-imp', [
+            { steamId: '76561198000000001', role: 'member' },
+            { steamId: '76561198000000002', role: 'member' },
+        ]);
+        assert.equal(DB.getDeploymentRoster('guild-imp').length, 2);
+        const added = DB.bulkAddClanMembers(clanId,
+            DB.getDeploymentRoster('guild-imp').map(r => ({ steamId: r.steam_id })));
+        assert.equal(added, 2);
+        assert.equal(DB.getClanMemberRole(clanId, '76561198000000001'), 'member');
     });
 
     test('bridge with no members is a no-op', () => {
@@ -138,10 +169,9 @@ describe('platform clan manager', () => {
         assert.equal(m.bed_given_at, null);
     });
 
-    test('bridge preserves platform profile fields across roster pushes', () => {
-        const clanId = DB.bridgeDeploymentClan('guild-p', 'P', [
-            { steamId: 'H1', role: 'hoster' }, { steamId: 'M1', role: 'member' },
-        ]);
+    test('curated profile fields survive later roster pushes', () => {
+        const clanId = DB.bridgeDeploymentClan('guild-p', 'P', [{ steamId: 'H1', role: 'hoster' }]);
+        DB.addClanMember(clanId, 'M1', 'Mike');   // leader curates
         DB.setClanMemberStage(clanId, 'M1', 'trial');
         DB.setClanMemberFlag(clanId, 'M1', 'bed', true);
         /* next 10-min push must NOT wipe stage/bed */

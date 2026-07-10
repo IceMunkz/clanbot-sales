@@ -522,12 +522,23 @@ async function handleMyClanApi(req, res, requestUrl) {
             const wipes = DB.listWipePlans(selId).map(w => ({
                 ...w, rsvps: DB.getWipePlanRsvps(w.id),
             }));
-            /* Steam enrichment: names/avatars for roster + RSVP display. */
+            /* Live Rust+ team ("Active clan") — read-only, transient. */
+            const live = c.deployment_guild_id ? DB.getDeploymentRoster(c.deployment_guild_id) : [];
+            /* Steam enrichment: names/avatars for roster + RSVP + live display. */
             const allIds = [...new Set([
                 ...roster.map(m => m.steam_id),
                 ...wipes.flatMap(w => w.rsvps.map(r => r.steam_id)),
+                ...live.slice(0, 500).map(r => r.steam_id),
             ])];
             const profiles = await steamProfiles(allIds).catch(() => ({}));
+            const inClan = new Set(roster.map(m => m.steam_id));
+            const activeRoster = live.slice(0, 500).map(r => ({
+                steamId: r.steam_id,
+                role: r.role,
+                inClan: inClan.has(r.steam_id),
+                persona: profiles[r.steam_id]?.persona ?? null,
+                avatar: profiles[r.steam_id]?.avatar ?? null,
+            }));
             clan = {
                 clanId: c.clan_id, name: c.name, tag: c.tag,
                 deploymentGuildId: c.deployment_guild_id,
@@ -539,6 +550,8 @@ async function handleMyClanApi(req, res, requestUrl) {
                     persona: profiles[m.steam_id]?.persona ?? null,
                     avatar: profiles[m.steam_id]?.avatar ?? null,
                 })),
+                activeRoster,
+                activeTotal: live.length,
                 wipes,
                 profiles: Object.fromEntries(Object.entries(profiles).map(([id, p]) =>
                     [id, { persona: p.persona, avatar: p.avatar }])),
@@ -670,6 +683,22 @@ async function handleMyClanApi(req, res, requestUrl) {
         if (!/^\d{17}$/.test(sid)) return json(res, 400, { error: 'steamId must be a 17-digit SteamID64' });
         DB.addClanMember(body.clanId, sid, body.name ? String(body.name).slice(0, 48) : null);
         return json(res, 200, { ok: true });
+    }
+
+    /* Promote the whole live Rust+ team into the curated roster in one click —
+       an EXPLICIT leader action (never automatic), with the count surfaced in
+       the UI so nobody imports a merge-raid team by accident. */
+    if (pathname === '/api/myclan/import-active' && req.method === 'POST') {
+        const clanId = String(body.clanId || '');
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const c = DB.getClan(clanId);
+        if (!c || !c.deployment_guild_id) return json(res, 400, { error: 'no linked Rust+ deployment' });
+        const live = DB.getDeploymentRoster(c.deployment_guild_id);
+        const cached = Object.fromEntries(DB.getSteamProfiles(live.map(r => r.steam_id)).map(p => [p.steam_id, p]));
+        const added = DB.bulkAddClanMembers(clanId, live.map(r => ({
+            steamId: r.steam_id, name: cached[r.steam_id]?.persona || null,
+        })));
+        return json(res, 200, { ok: true, added });
     }
 
     if (pathname === '/api/myclan/member/remove' && req.method === 'POST') {
