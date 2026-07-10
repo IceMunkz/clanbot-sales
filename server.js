@@ -330,6 +330,11 @@ async function handleRoster(req, res) {
     const members = Array.isArray(body.members) ? body.members : [];
     DB.upsertDeployment({ guildId, clanName: body.clanName, dashboardUrl: absDashboardUrl(body.dashboardUrl) });
     DB.replaceRoster(guildId, members);
+    /* Materialize/refresh the platform-side clan record so deployment-backed
+       clans appear in the website Clan Manager automatically. */
+    try { DB.bridgeDeploymentClan(guildId, body.clanName, members); } catch (e) {
+        console.warn('[roster] clan bridge failed:', e.message);
+    }
     return json(res, 200, { ok: true, count: members.length });
 }
 
@@ -418,6 +423,146 @@ async function handleClansLookup(req, res) {
         dashboardUrl: absDashboardUrl(c.dashboard_url),
     }));
     return json(res, 200, { clans });
+}
+
+/* ── ClanBot Platform: /api/myclan/* — the website-side Clan Manager ─────
+   Steam-cookie auth (verifySteam). A member may belong to several platform
+   clans; write operations take clanId and are role-checked against
+   clan_members (owner > leader > member). */
+const CAN_LEAD = new Set(['owner', 'leader']);
+
+async function handleMyClanApi(req, res, requestUrl) {
+    const steamId = verifySteam(req);
+    if (!steamId) return json(res, 401, { error: 'sign in with Steam first' });
+    const pathname = requestUrl.pathname;
+
+    const roleIn = (clanId) => DB.getClanMemberRole(clanId, steamId);
+    const requireLead = (clanId) => {
+        const role = roleIn(clanId);
+        if (!role) return { fail: () => json(res, 404, { error: 'not your clan' }) };
+        if (!CAN_LEAD.has(role)) return { fail: () => json(res, 403, { error: 'leaders only' }) };
+        return { role };
+    };
+    const body = req.method === 'POST'
+        ? await readBody(req).then(b => { try { return JSON.parse(b.toString() || '{}'); } catch { return null; } })
+        : null;
+    if (req.method === 'POST' && body === null) return json(res, 400, { error: 'bad json' });
+
+    /* GET /api/myclan[?clan=id] — my clans + the selected clan in full */
+    if (pathname === '/api/myclan' && req.method === 'GET') {
+        const mine = DB.getPlatformClansForSteam(steamId);
+        const selId = requestUrl.searchParams.get('clan') || (mine[0] && mine[0].clan_id);
+        let clan = null;
+        if (selId && mine.some(c => c.clan_id === selId)) {
+            const c = DB.getClan(selId);
+            const wipes = DB.listWipePlans(selId).map(w => ({
+                ...w, rsvps: DB.getWipePlanRsvps(w.id),
+            }));
+            clan = {
+                clanId: c.clan_id, name: c.name, tag: c.tag,
+                deploymentGuildId: c.deployment_guild_id,
+                myRole: roleIn(selId),
+                roster: DB.getClanRoster(selId),
+                wipes,
+            };
+        }
+        return json(res, 200, {
+            steamId,
+            clans: mine.map(c => ({ clanId: c.clan_id, name: c.name, tag: c.tag, myRole: c.my_role })),
+            clan,
+        });
+    }
+
+    if (pathname === '/api/myclan/create' && req.method === 'POST') {
+        const name = String(body.name || '').trim();
+        if (!name || name.length > 48) return json(res, 400, { error: 'clan name required (max 48 chars)' });
+        const tag = body.tag ? String(body.tag).trim().slice(0, 8) : null;
+        const clanId = DB.createClan({ name, tag, ownerSteamId: steamId, ownerName: body.ownerName || null });
+        return json(res, 200, { ok: true, clanId });
+    }
+
+    if (pathname === '/api/myclan/member/add' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const sid = String(body.steamId || '').trim();
+        if (!/^\d{17}$/.test(sid)) return json(res, 400, { error: 'steamId must be a 17-digit SteamID64' });
+        DB.addClanMember(body.clanId, sid, body.name ? String(body.name).slice(0, 48) : null);
+        return json(res, 200, { ok: true });
+    }
+
+    if (pathname === '/api/myclan/member/remove' && req.method === 'POST') {
+        const clanId = String(body.clanId || '');
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const targetRole = DB.getClanMemberRole(clanId, String(body.steamId || ''));
+        if (targetRole === 'owner') return json(res, 403, { error: 'cannot remove the owner' });
+        if (targetRole === 'leader' && gate.role !== 'owner') return json(res, 403, { error: 'only the owner can remove a leader' });
+        DB.removeClanMember(clanId, String(body.steamId || ''));
+        return json(res, 200, { ok: true });
+    }
+
+    if (pathname === '/api/myclan/member/role' && req.method === 'POST') {
+        const clanId = String(body.clanId || '');
+        if (roleIn(clanId) !== 'owner') return json(res, 403, { error: 'owner only' });
+        const role = String(body.role || '');
+        if (!['leader', 'member'].includes(role)) return json(res, 400, { error: 'role must be leader or member' });
+        if (DB.getClanMemberRole(clanId, String(body.steamId || '')) === 'owner') {
+            return json(res, 403, { error: 'cannot change the owner role' });
+        }
+        DB.setClanMemberRole(clanId, String(body.steamId || ''), role);
+        return json(res, 200, { ok: true });
+    }
+
+    if (pathname === '/api/myclan/invite' && req.method === 'POST') {
+        const clanId = String(body.clanId || '');
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const hours = Number(body.expiresHours || 0);
+        const code = DB.createClanInvite(clanId, steamId, {
+            expiresAt: hours > 0 ? Date.now() + hours * 3600 * 1000 : null,
+            maxUses: Number(body.maxUses || 0),
+        });
+        return json(res, 200, { ok: true, code, url: `${SALES_URL}/join/${code}` });
+    }
+
+    if (pathname === '/api/myclan/join' && req.method === 'POST') {
+        const result = DB.redeemClanInvite(String(body.code || ''), steamId, body.name || null);
+        if (!result.ok) return json(res, 400, { error: `invite ${result.reason}` });
+        return json(res, 200, { ok: true, clanId: result.clanId });
+    }
+
+    if (pathname === '/api/myclan/wipes' && req.method === 'POST') {
+        const clanId = String(body.clanId || '');
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const title = String(body.title || '').trim();
+        if (!title) return json(res, 400, { error: 'title required' });
+        const id = DB.createWipePlan(clanId, {
+            title: title.slice(0, 80),
+            wipeTs: body.wipeTs ? Number(body.wipeTs) : null,
+            serverName: body.serverName ? String(body.serverName).slice(0, 80) : null,
+            notes: body.notes ? String(body.notes).slice(0, 2000) : null,
+            createdBy: steamId,
+        });
+        return json(res, 200, { ok: true, id });
+    }
+
+    if (pathname === '/api/myclan/wipes/rsvp' && req.method === 'POST') {
+        const plan = DB.getWipePlan(Number(body.planId || 0));
+        if (!plan || !roleIn(plan.clan_id)) return json(res, 404, { error: 'not your clan' });
+        const response = String(body.response || '');
+        if (!['yes', 'no', 'maybe', 'late'].includes(response)) return json(res, 400, { error: 'bad response' });
+        DB.setWipePlanRsvp(plan.id, steamId, response, body.note ? String(body.note).slice(0, 300) : null);
+        return json(res, 200, { ok: true });
+    }
+
+    if (pathname === '/api/myclan/wipes/status' && req.method === 'POST') {
+        const plan = DB.getWipePlan(Number(body.planId || 0));
+        if (!plan) return json(res, 404, { error: 'no such wipe' });
+        const gate = requireLead(plan.clan_id); if (gate.fail) return gate.fail();
+        const status = String(body.status || '');
+        if (!['scheduled', 'done', 'cancelled'].includes(status)) return json(res, 400, { error: 'bad status' });
+        DB.setWipePlanStatus(plan.id, status);
+        return json(res, 200, { ok: true });
+    }
+
+    return json(res, 404, { error: 'unknown myclan endpoint' });
 }
 
 /* ── Route: GET /auth/steam — kick off Steam OpenID ──────────────────── */
@@ -910,6 +1055,17 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/clans' || pathname === '/clans.html') {
             return serveFile(res, path.join(PUBLIC_DIR, 'clans.html'), 'text/html');
         }
+        /* ClanBot Platform app (Clan Manager SPA). /clan and /join/<code> load
+           the app shell; /platform/* serves its built assets. */
+        if (pathname === '/clan' || pathname.startsWith('/clan/') || pathname.startsWith('/join/')) {
+            return serveFile(res, path.join(PUBLIC_DIR, 'platform', 'index.html'), 'text/html');
+        }
+        if (pathname.startsWith('/platform/')) {
+            const file = path.join(PUBLIC_DIR, 'platform', pathname.replace('/platform/', ''));
+            const ext  = path.extname(file);
+            const mime = { '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.html': 'text/html' }[ext] || 'application/octet-stream';
+            return serveFile(res, file, mime);
+        }
         if (pathname.startsWith('/public/')) {
             const file = path.join(PUBLIC_DIR, pathname.replace('/public/', ''));
             const ext  = path.extname(file);
@@ -929,6 +1085,7 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/api/clans'           && req.method === 'GET') return await handleClans(req, res);
         if (pathname === '/api/clans-lookup'    && req.method === 'POST') return await handleClansLookup(req, res);
         if (pathname === '/sso/launch'          && req.method === 'GET') return await handleSsoLaunch(req, res);
+        if (pathname.startsWith('/api/myclan'))                          return await handleMyClanApi(req, res, requestUrl);
 
         /* API */
         if (pathname === '/api/checkout' && req.method === 'POST') return await handleCheckout(req, res);

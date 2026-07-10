@@ -3,6 +3,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const DATA_DIR = process.env.SALES_DATA_DIR || path.join(__dirname, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -129,6 +130,66 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_memberships_steam ON memberships(steam_id);
   CREATE INDEX IF NOT EXISTS idx_memberships_guild ON memberships(guild_id);
+`);
+
+/* ── ClanBot Platform: first-class clans (the website-side Clan Manager) ──
+   A clan can exist with NO bot deployment — the platform is the daily driver
+   (roster, wipe planning, later Discord + recruitment); a deployment is the
+   premium wipe-time add-on linked via deployment_guild_id. Deployment-backed
+   clans are auto-materialized from roster pushes (bridgeDeploymentClan). */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS clans (
+    clan_id             TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    tag                 TEXT,
+    owner_steam_id      TEXT NOT NULL,
+    deployment_guild_id TEXT UNIQUE,
+    discord_guild_id    TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS clan_members (
+    clan_id  TEXT NOT NULL,
+    steam_id TEXT NOT NULL,
+    name     TEXT,
+    role     TEXT NOT NULL DEFAULT 'member',  -- owner | leader | member
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (clan_id, steam_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_clan_members_steam ON clan_members(steam_id);
+
+  CREATE TABLE IF NOT EXISTS clan_invites (
+    code       TEXT PRIMARY KEY,
+    clan_id    TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    expires_at INTEGER,                        -- unix ms, NULL = never
+    max_uses   INTEGER NOT NULL DEFAULT 0,     -- 0 = unlimited
+    uses       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_clan_invites_clan ON clan_invites(clan_id);
+
+  CREATE TABLE IF NOT EXISTS wipe_plans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id     TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    wipe_ts     INTEGER,                       -- unix ms
+    server_name TEXT,
+    notes       TEXT,
+    status      TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | done | cancelled
+    created_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_wipe_plans_clan ON wipe_plans(clan_id);
+
+  CREATE TABLE IF NOT EXISTS wipe_plan_rsvps (
+    plan_id  INTEGER NOT NULL,
+    steam_id TEXT NOT NULL,
+    response TEXT NOT NULL,                    -- yes | no | maybe | late
+    note     TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (plan_id, steam_id)
+  );
 `);
 
 module.exports = {
@@ -418,6 +479,165 @@ module.exports = {
             'SELECT 1 FROM memberships WHERE steam_id = ? AND guild_id = ?'
         ).get(String(steamId), String(guildId));
     },
+
+    /* ── ClanBot Platform: clans (website-side Clan Manager) ────────────── */
+
+    createClan: db.transaction(({ name, tag, ownerSteamId, ownerName }) => {
+        const clanId = crypto.randomBytes(6).toString('hex');
+        db.prepare(
+            'INSERT INTO clans (clan_id, name, tag, owner_steam_id) VALUES (?, ?, ?, ?)'
+        ).run(clanId, String(name), tag ? String(tag) : null, String(ownerSteamId));
+        db.prepare(
+            "INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, 'owner')"
+        ).run(clanId, String(ownerSteamId), ownerName || null);
+        return clanId;
+    }),
+    getClan(clanId) {
+        return db.prepare('SELECT * FROM clans WHERE clan_id = ?').get(String(clanId));
+    },
+    getClanByDeployment(guildId) {
+        return db.prepare('SELECT * FROM clans WHERE deployment_guild_id = ?').get(String(guildId));
+    },
+    updateClan(clanId, fields) {
+        const allowed = ['name', 'tag', 'discord_guild_id', 'deployment_guild_id'];
+        const keys = Object.keys(fields).filter(k => allowed.includes(k));
+        if (!keys.length) return;
+        const sets = keys.map(k => `${k} = ?`).join(', ');
+        db.prepare(`UPDATE clans SET ${sets} WHERE clan_id = ?`)
+            .run(...keys.map(k => fields[k]), String(clanId));
+    },
+    getPlatformClansForSteam(steamId) {
+        return db.prepare(
+            `SELECT c.*, m.role AS my_role FROM clan_members m
+             JOIN clans c ON c.clan_id = m.clan_id
+             WHERE m.steam_id = ? ORDER BY c.created_at`
+        ).all(String(steamId));
+    },
+    getClanRoster(clanId) {
+        return db.prepare(
+            `SELECT steam_id, name, role, added_at FROM clan_members
+             WHERE clan_id = ?
+             ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'leader' THEN 1 ELSE 2 END, name COLLATE NOCASE`
+        ).all(String(clanId));
+    },
+    getClanMemberRole(clanId, steamId) {
+        const row = db.prepare(
+            'SELECT role FROM clan_members WHERE clan_id = ? AND steam_id = ?'
+        ).get(String(clanId), String(steamId));
+        return row ? row.role : null;
+    },
+    addClanMember(clanId, steamId, name, role = 'member') {
+        db.prepare(
+            `INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, ?)
+             ON CONFLICT(clan_id, steam_id) DO UPDATE SET
+               name = COALESCE(excluded.name, clan_members.name)`
+        ).run(String(clanId), String(steamId), name || null, String(role));
+    },
+    removeClanMember(clanId, steamId) {
+        db.prepare('DELETE FROM clan_members WHERE clan_id = ? AND steam_id = ?')
+            .run(String(clanId), String(steamId));
+    },
+    setClanMemberRole(clanId, steamId, role) {
+        db.prepare('UPDATE clan_members SET role = ? WHERE clan_id = ? AND steam_id = ?')
+            .run(String(role), String(clanId), String(steamId));
+    },
+
+    createClanInvite(clanId, createdBy, { expiresAt = null, maxUses = 0 } = {}) {
+        const code = crypto.randomBytes(5).toString('hex');
+        db.prepare(
+            'INSERT INTO clan_invites (code, clan_id, created_by, expires_at, max_uses) VALUES (?, ?, ?, ?, ?)'
+        ).run(code, String(clanId), String(createdBy), expiresAt, Number(maxUses) || 0);
+        return code;
+    },
+    getClanInvite(code) {
+        return db.prepare('SELECT * FROM clan_invites WHERE code = ?').get(String(code));
+    },
+    /* Validate + consume an invite and add the member atomically. Returns
+       { ok, clanId?, reason? }. Joining a clan you're in is a friendly no-op. */
+    redeemClanInvite: db.transaction((code, steamId, name) => {
+        const inv = db.prepare('SELECT * FROM clan_invites WHERE code = ?').get(String(code));
+        if (!inv) return { ok: false, reason: 'unknown code' };
+        if (inv.expires_at && Date.now() > Number(inv.expires_at)) return { ok: false, reason: 'expired' };
+        if (inv.max_uses > 0 && inv.uses >= inv.max_uses) return { ok: false, reason: 'used up' };
+        const existing = db.prepare(
+            'SELECT 1 FROM clan_members WHERE clan_id = ? AND steam_id = ?'
+        ).get(inv.clan_id, String(steamId));
+        if (!existing) {
+            db.prepare(
+                "INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, 'member')"
+            ).run(inv.clan_id, String(steamId), name || null);
+            db.prepare('UPDATE clan_invites SET uses = uses + 1 WHERE code = ?').run(inv.code);
+        }
+        return { ok: true, clanId: inv.clan_id };
+    }),
+
+    /* ── Wipe plans ── */
+    createWipePlan(clanId, { title, wipeTs, serverName, notes, createdBy }) {
+        return db.prepare(
+            `INSERT INTO wipe_plans (clan_id, title, wipe_ts, server_name, notes, created_by)
+             VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(String(clanId), String(title), wipeTs || null, serverName || null,
+            notes || null, createdBy || null).lastInsertRowid;
+    },
+    listWipePlans(clanId) {
+        return db.prepare(
+            `SELECT * FROM wipe_plans WHERE clan_id = ?
+             ORDER BY status = 'scheduled' DESC, wipe_ts IS NULL, wipe_ts ASC, id DESC`
+        ).all(String(clanId));
+    },
+    getWipePlan(id) {
+        return db.prepare('SELECT * FROM wipe_plans WHERE id = ?').get(Number(id));
+    },
+    setWipePlanStatus(id, status) {
+        db.prepare('UPDATE wipe_plans SET status = ? WHERE id = ?').run(String(status), Number(id));
+    },
+    setWipePlanRsvp(planId, steamId, response, note) {
+        db.prepare(
+            `INSERT INTO wipe_plan_rsvps (plan_id, steam_id, response, note, updated_at)
+             VALUES (?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(plan_id, steam_id) DO UPDATE SET
+               response = excluded.response, note = excluded.note, updated_at = datetime('now')`
+        ).run(Number(planId), String(steamId), String(response), note || null);
+    },
+    getWipePlanRsvps(planId) {
+        return db.prepare(
+            'SELECT steam_id, response, note, updated_at FROM wipe_plan_rsvps WHERE plan_id = ?'
+        ).all(Number(planId));
+    },
+
+    /* Bridge: materialize/refresh a platform clan from a deployment's roster
+       push, so every existing bot customer appears in the Clan Manager on day
+       one. Deployment roles map hoster→owner, else pass through. The
+       deployment stays authoritative for bridged rosters (full replace),
+       matching replaceRoster semantics. */
+    bridgeDeploymentClan: db.transaction((guildId, clanName, members) => {
+        const gid = String(guildId);
+        const list = (members || []).filter(m => m && m.steamId);
+        const hoster = list.find(m => m.role === 'hoster');
+        const owner = hoster ? hoster.steamId : (list[0] && list[0].steamId);
+        if (!owner) return null;
+
+        let clan = db.prepare('SELECT * FROM clans WHERE deployment_guild_id = ?').get(gid);
+        if (!clan) {
+            const clanId = crypto.randomBytes(6).toString('hex');
+            db.prepare(
+                'INSERT INTO clans (clan_id, name, owner_steam_id, deployment_guild_id) VALUES (?, ?, ?, ?)'
+            ).run(clanId, clanName || 'My Clan', String(owner), gid);
+            clan = { clan_id: clanId };
+        } else if (clanName) {
+            db.prepare('UPDATE clans SET name = ? WHERE clan_id = ?').run(clanName, clan.clan_id);
+        }
+
+        db.prepare('DELETE FROM clan_members WHERE clan_id = ?').run(clan.clan_id);
+        const ins = db.prepare(
+            'INSERT OR REPLACE INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, ?)'
+        );
+        for (const m of list) {
+            const role = m.role === 'hoster' ? 'owner' : (m.role === 'leader' ? 'leader' : 'member');
+            ins.run(clan.clan_id, String(m.steamId), m.name || null, role);
+        }
+        return clan.clan_id;
+    }),
 
     /* Return an order's port + bot token to their pools (used when a customer
        is fully deleted). Bot tokens go back to 'available' for reuse. */
