@@ -190,7 +190,66 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (plan_id, steam_id)
   );
+
+  CREATE TABLE IF NOT EXISTS clan_member_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id    TEXT NOT NULL,
+    steam_id   TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    by_steam_id TEXT,
+    by_name    TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_member_notes ON clan_member_notes(clan_id, steam_id);
+
+  CREATE TABLE IF NOT EXISTS clan_announcements (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id     TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    by_steam_id TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_announcements_clan ON clan_announcements(clan_id);
+
+  CREATE TABLE IF NOT EXISTS clan_applications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id     TEXT NOT NULL,
+    steam_id    TEXT NOT NULL,
+    name        TEXT,
+    message     TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | denied
+    decided_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    decided_at  TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_applications_clan ON clan_applications(clan_id, status);
+
+  CREATE TABLE IF NOT EXISTS steam_profiles (
+    steam_id   TEXT PRIMARY KEY,
+    persona    TEXT,
+    avatar     TEXT,
+    vac_bans   INTEGER,
+    game_bans  INTEGER,
+    days_since_last_ban INTEGER,
+    fetched_at INTEGER NOT NULL DEFAULT 0
+  );
 `);
+
+/* Idempotent column migrations for clan_members — mirror the bot's member
+   profile surface (recruitment stage, clan rank, bed + locker tracking). */
+for (const [col, ddl] of [
+    ['stage',          "ALTER TABLE clan_members ADD COLUMN stage TEXT"],
+    ['rank',           "ALTER TABLE clan_members ADD COLUMN rank TEXT"],
+    ['has_bed',        "ALTER TABLE clan_members ADD COLUMN has_bed INTEGER NOT NULL DEFAULT 0"],
+    ['bed_given_at',   "ALTER TABLE clan_members ADD COLUMN bed_given_at TEXT"],
+    ['has_locker',     "ALTER TABLE clan_members ADD COLUMN has_locker INTEGER NOT NULL DEFAULT 0"],
+    ['locker_given_at',"ALTER TABLE clan_members ADD COLUMN locker_given_at TEXT"],
+]) {
+    if (!hasColumn('clan_members', col)) db.exec(ddl);
+}
+if (!hasColumn('clans', 'applications_open')) {
+    db.exec("ALTER TABLE clans ADD COLUMN applications_open INTEGER NOT NULL DEFAULT 1");
+}
 
 module.exports = {
     /* Token pool */
@@ -515,7 +574,9 @@ module.exports = {
     },
     getClanRoster(clanId) {
         return db.prepare(
-            `SELECT steam_id, name, role, added_at FROM clan_members
+            `SELECT steam_id, name, role, stage, rank, has_bed, bed_given_at,
+                    has_locker, locker_given_at, added_at
+             FROM clan_members
              WHERE clan_id = ?
              ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'leader' THEN 1 ELSE 2 END, name COLLATE NOCASE`
         ).all(String(clanId));
@@ -605,6 +666,111 @@ module.exports = {
         ).all(Number(planId));
     },
 
+    /* ── Member profile fields (bot Clan Manager parity) ── */
+    setClanMemberStage(clanId, steamId, stage) {
+        db.prepare('UPDATE clan_members SET stage = ? WHERE clan_id = ? AND steam_id = ?')
+            .run(stage || null, String(clanId), String(steamId));
+    },
+    setClanMemberRank(clanId, steamId, rank) {
+        db.prepare('UPDATE clan_members SET rank = ? WHERE clan_id = ? AND steam_id = ?')
+            .run(rank || null, String(clanId), String(steamId));
+    },
+    setClanMemberFlag(clanId, steamId, field, value) {
+        const col = field === 'bed' ? 'has_bed' : 'has_locker';
+        const at  = field === 'bed' ? 'bed_given_at' : 'locker_given_at';
+        db.prepare(
+            `UPDATE clan_members SET ${col} = ?, ${at} = CASE WHEN ? THEN datetime('now') ELSE NULL END
+             WHERE clan_id = ? AND steam_id = ?`
+        ).run(value ? 1 : 0, value ? 1 : 0, String(clanId), String(steamId));
+    },
+
+    addClanMemberNote(clanId, steamId, text, bySteamId, byName) {
+        return db.prepare(
+            `INSERT INTO clan_member_notes (clan_id, steam_id, text, by_steam_id, by_name)
+             VALUES (?, ?, ?, ?, ?)`
+        ).run(String(clanId), String(steamId), String(text), bySteamId || null, byName || null).lastInsertRowid;
+    },
+    listClanMemberNotes(clanId, steamId, limit = 50) {
+        return db.prepare(
+            `SELECT id, text, by_steam_id, by_name, created_at FROM clan_member_notes
+             WHERE clan_id = ? AND steam_id = ? ORDER BY id DESC LIMIT ?`
+        ).all(String(clanId), String(steamId), Number(limit));
+    },
+
+    postClanAnnouncement(clanId, text, bySteamId) {
+        return db.prepare(
+            'INSERT INTO clan_announcements (clan_id, text, by_steam_id) VALUES (?, ?, ?)'
+        ).run(String(clanId), String(text), bySteamId || null).lastInsertRowid;
+    },
+    listClanAnnouncements(clanId, limit = 5) {
+        return db.prepare(
+            `SELECT id, text, by_steam_id, created_at FROM clan_announcements
+             WHERE clan_id = ? ORDER BY id DESC LIMIT ?`
+        ).all(String(clanId), Number(limit));
+    },
+
+    /* ── Applications (recruitment pipeline) ── */
+    createClanApplication(clanId, steamId, name, message) {
+        /* One live application per applicant per clan. */
+        const existing = db.prepare(
+            "SELECT id FROM clan_applications WHERE clan_id = ? AND steam_id = ? AND status = 'pending'"
+        ).get(String(clanId), String(steamId));
+        if (existing) return existing.id;
+        return db.prepare(
+            'INSERT INTO clan_applications (clan_id, steam_id, name, message) VALUES (?, ?, ?, ?)'
+        ).run(String(clanId), String(steamId), name || null, message || null).lastInsertRowid;
+    },
+    listClanApplications(clanId, status = 'pending') {
+        return db.prepare(
+            `SELECT * FROM clan_applications WHERE clan_id = ? AND status = ?
+             ORDER BY id DESC LIMIT 100`
+        ).all(String(clanId), String(status));
+    },
+    getClanApplication(id) {
+        return db.prepare('SELECT * FROM clan_applications WHERE id = ?').get(Number(id));
+    },
+    /* Approve adds the member (stage 'trial' — the bot's post-applicant tier). */
+    decideClanApplication: db.transaction((id, approve, decidedBy) => {
+        const app = db.prepare('SELECT * FROM clan_applications WHERE id = ?').get(Number(id));
+        if (!app || app.status !== 'pending') return null;
+        db.prepare(
+            "UPDATE clan_applications SET status = ?, decided_by = ?, decided_at = datetime('now') WHERE id = ?"
+        ).run(approve ? 'approved' : 'denied', decidedBy || null, app.id);
+        if (approve) {
+            db.prepare(
+                `INSERT INTO clan_members (clan_id, steam_id, name, role, stage)
+                 VALUES (?, ?, ?, 'member', 'trial')
+                 ON CONFLICT(clan_id, steam_id) DO NOTHING`
+            ).run(app.clan_id, app.steam_id, app.name);
+        }
+        return app;
+    }),
+    setClanApplicationsOpen(clanId, open) {
+        db.prepare('UPDATE clans SET applications_open = ? WHERE clan_id = ?')
+            .run(open ? 1 : 0, String(clanId));
+    },
+
+    /* ── Steam profile cache (names, avatars, ban vetting) ── */
+    getSteamProfiles(steamIds) {
+        if (!steamIds.length) return [];
+        const q = steamIds.map(() => '?').join(',');
+        return db.prepare(`SELECT * FROM steam_profiles WHERE steam_id IN (${q})`).all(...steamIds.map(String));
+    },
+    upsertSteamProfile({ steamId, persona, avatar, vacBans, gameBans, daysSinceLastBan }) {
+        db.prepare(
+            `INSERT INTO steam_profiles (steam_id, persona, avatar, vac_bans, game_bans, days_since_last_ban, fetched_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(steam_id) DO UPDATE SET
+               persona = COALESCE(excluded.persona, steam_profiles.persona),
+               avatar  = COALESCE(excluded.avatar, steam_profiles.avatar),
+               vac_bans = COALESCE(excluded.vac_bans, steam_profiles.vac_bans),
+               game_bans = COALESCE(excluded.game_bans, steam_profiles.game_bans),
+               days_since_last_ban = COALESCE(excluded.days_since_last_ban, steam_profiles.days_since_last_ban),
+               fetched_at = excluded.fetched_at`
+        ).run(String(steamId), persona ?? null, avatar ?? null, vacBans ?? null, gameBans ?? null,
+            daysSinceLastBan ?? null, Date.now());
+    },
+
     /* Bridge: materialize/refresh a platform clan from a deployment's roster
        push, so every existing bot customer appears in the Clan Manager on day
        one. Deployment roles map hoster→owner, else pass through. The
@@ -628,13 +794,26 @@ module.exports = {
             db.prepare('UPDATE clans SET name = ? WHERE clan_id = ?').run(clanName, clan.clan_id);
         }
 
-        db.prepare('DELETE FROM clan_members WHERE clan_id = ?').run(clan.clan_id);
+        /* Upsert members WITHOUT touching platform-side profile fields
+           (stage, rank, bed/locker, notes) — a full replace would wipe them on
+           every 10-minute roster push. Members absent from the push are
+           removed (the deployment is authoritative for WHO is in the clan). */
         const ins = db.prepare(
-            'INSERT OR REPLACE INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, ?)'
+            `INSERT INTO clan_members (clan_id, steam_id, name, role) VALUES (?, ?, ?, ?)
+             ON CONFLICT(clan_id, steam_id) DO UPDATE SET
+               role = excluded.role,
+               name = COALESCE(excluded.name, clan_members.name)`
         );
+        const pushed = new Set();
         for (const m of list) {
             const role = m.role === 'hoster' ? 'owner' : (m.role === 'leader' ? 'leader' : 'member');
             ins.run(clan.clan_id, String(m.steamId), m.name || null, role);
+            pushed.add(String(m.steamId));
+        }
+        const current = db.prepare('SELECT steam_id FROM clan_members WHERE clan_id = ?').all(clan.clan_id);
+        const del = db.prepare('DELETE FROM clan_members WHERE clan_id = ? AND steam_id = ?');
+        for (const row of current) {
+            if (!pushed.has(row.steam_id)) del.run(clan.clan_id, row.steam_id);
         }
         return clan.clan_id;
     }),

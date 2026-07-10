@@ -93,6 +93,22 @@ label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); 
 .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .countdown { font-size: 24px; font-weight: 700; color: var(--accent); }
+
+.row-click { cursor: pointer; border-radius: 10px; margin: 0 -8px; padding-left: 12px; padding-right: 12px; }
+.row-click:hover { background: rgba(0,163,163,.07); }
+
+.drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(6,10,12,.6); z-index: 40;
+  display: flex; justify-content: flex-end;
+}
+.drawer {
+  width: min(420px, 100%); height: 100%; overflow-y: auto;
+  background: var(--surface); border-left: 1px solid var(--line);
+  padding: 22px 20px 40px; box-shadow: -24px 0 60px rgba(0,0,0,.45);
+  animation: drawer-in .18s ease-out;
+}
+@keyframes drawer-in { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+.avatar img, img.avatar { border-radius: 50%; }
 .error { color: #ffb3b3; font-size: 13px; margin-top: 8px; }
 .ok { color: #aff2d4; font-size: 13px; margin-top: 8px; }
 .center { text-align: center; padding: 40px 16px; }

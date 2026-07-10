@@ -425,6 +425,68 @@ async function handleClansLookup(req, res) {
     return json(res, 200, { clans });
 }
 
+/* ── Steam profile enrichment (names, avatars, ban vetting) ──────────────
+   Trimmed port of the bot's steamAudit: batch GetPlayerSummaries +
+   GetPlayerBans behind a 6-hour SQLite cache. Degrades gracefully — without
+   STEAM_API_KEY the platform still works, just without names/avatars/vetting. */
+const STEAM_API_KEY = (process.env.STEAM_API_KEY || process.env.STEAM_WEB_API_KEY || '').trim();
+const STEAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function steamGetJson(url) {
+    return new Promise((resolve) => {
+        https.get(url, (r) => {
+            let d = '';
+            r.on('data', c => d += c);
+            r.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+        }).on('error', () => resolve(null));
+    });
+}
+
+/* Returns { steamId: {persona, avatar, vac_bans, game_bans, days_since_last_ban} }
+   from cache, refreshing stale/missing entries when a key is configured. */
+async function steamProfiles(steamIds) {
+    const ids = [...new Set(steamIds.map(String).filter(s => /^\d{17}$/.test(s)))];
+    if (!ids.length) return {};
+    const out = {};
+    const now = Date.now();
+    const stale = [];
+    for (const row of DB.getSteamProfiles(ids)) {
+        out[row.steam_id] = row;
+        if (now - (row.fetched_at || 0) > STEAM_CACHE_TTL_MS) stale.push(row.steam_id);
+    }
+    const missing = ids.filter(id => !out[id]);
+    const toFetch = [...missing, ...stale].slice(0, 100);
+
+    if (STEAM_API_KEY && toFetch.length) {
+        const idsParam = toFetch.join(',');
+        const [sumRes, banRes] = await Promise.all([
+            steamGetJson(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${idsParam}`),
+            steamGetJson(`https://api.steampowered.com/ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${idsParam}`),
+        ]);
+        const sums = new Map((sumRes?.response?.players || []).map(p => [String(p.steamid), p]));
+        const bans = new Map((banRes?.players || []).map(p => [String(p.SteamId), p]));
+        for (const id of toFetch) {
+            const s = sums.get(id), b = bans.get(id);
+            if (!s && !b) continue;
+            const profile = {
+                steamId: id,
+                persona: s?.personaname ?? null,
+                avatar: s?.avatarfull || s?.avatarmedium || s?.avatar || null,
+                vacBans: b ? Number(b.NumberOfVACBans || 0) : null,
+                gameBans: b ? Number(b.NumberOfGameBans || 0) : null,
+                daysSinceLastBan: b ? Number(b.DaysSinceLastBan || 0) : null,
+            };
+            try { DB.upsertSteamProfile(profile); } catch (_) {}
+            out[id] = {
+                steam_id: id, persona: profile.persona, avatar: profile.avatar,
+                vac_bans: profile.vacBans, game_bans: profile.gameBans,
+                days_since_last_ban: profile.daysSinceLastBan, fetched_at: now,
+            };
+        }
+    }
+    return out;
+}
+
 /* ── ClanBot Platform: /api/myclan/* — the website-side Clan Manager ─────
    Steam-cookie auth (verifySteam). A member may belong to several platform
    clans; write operations take clanId and are role-checked against
@@ -455,21 +517,142 @@ async function handleMyClanApi(req, res, requestUrl) {
         let clan = null;
         if (selId && mine.some(c => c.clan_id === selId)) {
             const c = DB.getClan(selId);
+            const myRole = roleIn(selId);
+            const roster = DB.getClanRoster(selId);
             const wipes = DB.listWipePlans(selId).map(w => ({
                 ...w, rsvps: DB.getWipePlanRsvps(w.id),
             }));
+            /* Steam enrichment: names/avatars for roster + RSVP display. */
+            const allIds = [...new Set([
+                ...roster.map(m => m.steam_id),
+                ...wipes.flatMap(w => w.rsvps.map(r => r.steam_id)),
+            ])];
+            const profiles = await steamProfiles(allIds).catch(() => ({}));
             clan = {
                 clanId: c.clan_id, name: c.name, tag: c.tag,
                 deploymentGuildId: c.deployment_guild_id,
-                myRole: roleIn(selId),
-                roster: DB.getClanRoster(selId),
+                applicationsOpen: !!c.applications_open,
+                applyUrl: `${SALES_URL}/apply/${c.clan_id}`,
+                myRole,
+                roster: roster.map(m => ({
+                    ...m,
+                    persona: profiles[m.steam_id]?.persona ?? null,
+                    avatar: profiles[m.steam_id]?.avatar ?? null,
+                })),
                 wipes,
+                profiles: Object.fromEntries(Object.entries(profiles).map(([id, p]) =>
+                    [id, { persona: p.persona, avatar: p.avatar }])),
+                announcements: DB.listClanAnnouncements(selId, 5),
+                pendingApplications: CAN_LEAD.has(myRole)
+                    ? DB.listClanApplications(selId, 'pending').length : 0,
             };
         }
         return json(res, 200, {
             steamId,
             clans: mine.map(c => ({ clanId: c.clan_id, name: c.name, tag: c.tag, myRole: c.my_role })),
             clan,
+        });
+    }
+
+    /* ── Member profile ops (bot Clan Manager parity) ── */
+    if (pathname === '/api/myclan/member/stage' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const stage = String(body.stage || '');
+        if (stage && !['applicant', 'trial', 'member', 'departed'].includes(stage)) {
+            return json(res, 400, { error: 'bad stage' });
+        }
+        DB.setClanMemberStage(body.clanId, String(body.steamId || ''), stage || null);
+        return json(res, 200, { ok: true });
+    }
+    if (pathname === '/api/myclan/member/rank' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const rank = String(body.rank || '');
+        if (rank && !['leader', 'officer', 'member', 'recruit'].includes(rank)) {
+            return json(res, 400, { error: 'bad rank' });
+        }
+        DB.setClanMemberRank(body.clanId, String(body.steamId || ''), rank || null);
+        return json(res, 200, { ok: true });
+    }
+    if (pathname === '/api/myclan/member/flag' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const field = String(body.field || '');
+        if (!['bed', 'locker'].includes(field)) return json(res, 400, { error: 'field must be bed or locker' });
+        DB.setClanMemberFlag(body.clanId, String(body.steamId || ''), field, !!body.value);
+        return json(res, 200, { ok: true });
+    }
+    if (pathname === '/api/myclan/member/notes' && req.method === 'GET') {
+        const clanId = requestUrl.searchParams.get('clan') || '';
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const target = requestUrl.searchParams.get('steamId') || '';
+        return json(res, 200, { notes: DB.listClanMemberNotes(clanId, target) });
+    }
+    if (pathname === '/api/myclan/member/note' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const text = String(body.text || '').trim();
+        if (!text) return json(res, 400, { error: 'note text required' });
+        DB.addClanMemberNote(body.clanId, String(body.steamId || ''), text.slice(0, 1000), steamId, body.byName || null);
+        return json(res, 200, { ok: true });
+    }
+
+    /* ── Announcements ── */
+    if (pathname === '/api/myclan/announce' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        const text = String(body.text || '').trim();
+        if (!text) return json(res, 400, { error: 'announcement text required' });
+        DB.postClanAnnouncement(body.clanId, text.slice(0, 2000), steamId);
+        return json(res, 200, { ok: true });
+    }
+
+    /* ── Applications (recruitment pipeline + Steam vetting) ── */
+    if (pathname === '/api/myclan/applications' && req.method === 'GET') {
+        const clanId = requestUrl.searchParams.get('clan') || '';
+        const gate = requireLead(clanId); if (gate.fail) return gate.fail();
+        const apps = DB.listClanApplications(clanId, requestUrl.searchParams.get('status') || 'pending');
+        const profiles = await steamProfiles(apps.map(a => a.steam_id)).catch(() => ({}));
+        return json(res, 200, {
+            applications: apps.map(a => ({
+                ...a,
+                persona: profiles[a.steam_id]?.persona ?? null,
+                avatar: profiles[a.steam_id]?.avatar ?? null,
+                vacBans: profiles[a.steam_id]?.vac_bans ?? null,
+                gameBans: profiles[a.steam_id]?.game_bans ?? null,
+                daysSinceLastBan: profiles[a.steam_id]?.days_since_last_ban ?? null,
+            })),
+            vettingEnabled: !!STEAM_API_KEY,
+        });
+    }
+    if (pathname === '/api/myclan/applications/decide' && req.method === 'POST') {
+        const app = DB.getClanApplication(Number(body.id || 0));
+        if (!app) return json(res, 404, { error: 'no such application' });
+        const gate = requireLead(app.clan_id); if (gate.fail) return gate.fail();
+        const decided = DB.decideClanApplication(app.id, !!body.approve, steamId);
+        if (!decided) return json(res, 409, { error: 'already decided' });
+        return json(res, 200, { ok: true });
+    }
+    if (pathname === '/api/myclan/applications/open' && req.method === 'POST') {
+        const gate = requireLead(String(body.clanId || '')); if (gate.fail) return gate.fail();
+        DB.setClanApplicationsOpen(body.clanId, !!body.open);
+        return json(res, 200, { ok: true });
+    }
+    /* Public apply — any signed-in Steam user, no membership required. */
+    if (pathname === '/api/myclan/apply' && req.method === 'POST') {
+        const clan = DB.getClan(String(body.clanId || ''));
+        if (!clan) return json(res, 404, { error: 'no such clan' });
+        if (!clan.applications_open) return json(res, 403, { error: 'applications are closed' });
+        if (DB.getClanMemberRole(clan.clan_id, steamId)) return json(res, 400, { error: 'already a member' });
+        const id = DB.createClanApplication(clan.clan_id, steamId,
+            body.name ? String(body.name).slice(0, 48) : null,
+            body.message ? String(body.message).slice(0, 1000) : null);
+        return json(res, 200, { ok: true, id, clanName: clan.name });
+    }
+    /* Public clan card for the apply page (name only — no roster leak). */
+    if (pathname === '/api/myclan/applyinfo' && req.method === 'GET') {
+        const clan = DB.getClan(requestUrl.searchParams.get('clan') || '');
+        if (!clan) return json(res, 404, { error: 'no such clan' });
+        return json(res, 200, {
+            clanId: clan.clan_id, name: clan.name, tag: clan.tag,
+            open: !!clan.applications_open,
+            alreadyMember: !!DB.getClanMemberRole(clan.clan_id, steamId),
         });
     }
 
@@ -1057,7 +1240,7 @@ const server = http.createServer(async (req, res) => {
         }
         /* ClanBot Platform app (Clan Manager SPA). /clan and /join/<code> load
            the app shell; /platform/* serves its built assets. */
-        if (pathname === '/clan' || pathname.startsWith('/clan/') || pathname.startsWith('/join/')) {
+        if (pathname === '/clan' || pathname.startsWith('/clan/') || pathname.startsWith('/join/') || pathname.startsWith('/apply/')) {
             return serveFile(res, path.join(PUBLIC_DIR, 'platform', 'index.html'), 'text/html');
         }
         if (pathname.startsWith('/platform/')) {
